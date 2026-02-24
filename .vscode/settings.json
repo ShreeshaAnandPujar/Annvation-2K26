@@ -1,0 +1,15 @@
+{
+    "python.analysis.extraPaths": [
+        "c:\\Users\\Macaulay Praise\\.vscode-oss\\extensions\\continue.continue-0.0.412-win32-x64"
+    ],
+    "python.autoComplete.extraPaths": [
+        "c:\\Users\\Macaulay Praise\\.vscode-oss\\extensions\\continue.continue-0.0.412-win32-x64"
+    ],
+    "vs-kubernetes.yaml-validation.enabled": true,
+    "yaml.validation.enabled": true,
+    "yaml.schemas": {
+        "kubernetes": [
+            "monitoring/prometheus/prometheus.yaml"
+        ]
+    }
+}

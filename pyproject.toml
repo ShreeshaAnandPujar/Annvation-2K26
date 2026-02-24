@@ -1,0 +1,67 @@
+[project]
+name = "agad"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "macaulaypraise",email = "Macaulaypraise37@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[dependency-groups]
+dev = [
+    "ruff (>=0.15.2,<0.16.0)",
+    "mypy (>=1.19.1,<2.0.0)",
+    "pytest (>=9.0.2,<10.0.0)",
+    "pytest-asyncio (>=1.3.0,<2.0.0)",
+    "pytest-cov (>=7.0.0,<8.0.0)",
+    "httpx (>=0.28.1,<0.29.0)"
+]
+
+[tool.ruff]
+# Target your specific pinned version
+target-version = "py312"
+line-length = 88
+
+[tool.ruff.lint]
+# Enable Pyflakes (F), pycodestyle (E), isort (I), and pyupgrade (UP)
+select = ["E", "F", "I", "UP"]
+ignore = []
+
+[tool.mypy]
+python_version = "3.12"
+# FastAPI relies heavily on Pydantic and strict type hints.
+# This enforces industry-standard type safety.
+strict = true
+check_untyped_defs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+warn_return_any = true
+warn_unused_ignores = true
+
+# Uncomment and modify this block if you install a third-party package
+# that does not have built-in type hints to prevent Mypy from crashing.
+# [[tool.mypy.overrides]]
+# module = "some_untyped_package.*"
+# ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+# Define where your tests will live
+testpaths = ["tests"]
+
+# Automatically detect and run async tests
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+
+# Default command line options when you run `pytest`
+# -v: verbose output
+# --cov: generate a coverage report for your main code folder (assuming it's named 'app')
+# --cov-report: show exactly which lines of code are missing tests in the terminal
+addopts = "-v --cov=app --cov-report=term-missing"
