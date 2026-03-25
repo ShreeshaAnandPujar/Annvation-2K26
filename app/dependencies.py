@@ -1,6 +1,7 @@
 from collections.abc import AsyncGenerator
-from fastapi import Depends
+from fastapi import Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
+from redis.asyncio import Redis
 from app.config import Settings, get_settings
 from app.core.database import AsyncSessionFactory
 
@@ -17,3 +18,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
             raise
         finally:
             await session.close()
+
+async def get_redis(request: Request) -> Redis:
+    """Get the Redis client from app state."""
+    return request.app.state.redis
