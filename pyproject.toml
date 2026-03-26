@@ -15,9 +15,12 @@ dependencies = [
     "sqlalchemy (>=2.0.48,<3.0.0)",
     "asyncpg (>=0.31.0,<0.32.0)",
     "alembic (>=1.18.4,<2.0.0)",
-    "passlib[bcrypt] (>=1.7.4,<2.0.0)",
     "redis[hiredis] (>=7.4.0,<8.0.0)",
-    "pybloom-live (>=4.0.0,<5.0.0)"
+    "pybloom-live (>=4.0.0,<5.0.0)",
+    "python-jose[cryptography] (>=3.5.0,<4.0.0)",
+    "pydantic[email] (>=2.12.5,<3.0.0)",
+    "email-validator (>=2.3.0,<3.0.0)",
+    "bcrypt (>=5.0.0,<6.0.0)"
 ]
 
 
@@ -33,7 +36,9 @@ dev = [
     "pytest-cov (>=7.0.0,<8.0.0)",
     "httpx (>=0.28.1,<0.29.0)",
     "pytest-mock (>=3.15.1,<4.0.0)",
-    "ruff (>=0.15.7,<0.16.0)"
+    "ruff (>=0.15.7,<0.16.0)",
+    "asgi-lifespan (>=2.1.0,<3.0.0)",
+    "python-dotenv (>=1.2.2,<2.0.0)"
 ]
 
 [tool.ruff]
