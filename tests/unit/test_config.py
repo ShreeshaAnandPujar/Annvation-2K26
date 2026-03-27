@@ -1,4 +1,3 @@
-# tests/unit/test_config.py
 from app.config import get_settings
 
 def test_settings_load():

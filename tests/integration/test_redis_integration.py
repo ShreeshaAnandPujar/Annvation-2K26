@@ -1,4 +1,3 @@
-# tests/integration/test_redis_integration.py
 import pytest
 from redis.asyncio import Redis
 from app.config import get_settings

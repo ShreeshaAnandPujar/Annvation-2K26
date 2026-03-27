@@ -1,4 +1,3 @@
-# tests/unit/test_redis_client.py
 from unittest.mock import AsyncMock, patch
 import pytest
 from app.core.redis_client import create_redis_client, close_redis_client
