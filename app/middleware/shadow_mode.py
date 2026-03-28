@@ -1,7 +1,10 @@
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from app.services.shadow_logger import ShadowLogger
+from starlette.responses import Response
+
 from app.config import get_settings
+from app.core.redis_client import is_shadow_mode_enabled
+from app.services.shadow_logger import ShadowLogger
 
 settings = get_settings()
 
@@ -13,17 +16,26 @@ class ShadowModeMiddleware(BaseHTTPMiddleware):
     but not enforced because shadow mode is enabled.
     """
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         response = await call_next(request)
 
-        if not settings.shadow_mode_enabled:
+        # Get redis instance early to check the flag
+        redis = request.app.state.redis
+
+        # Perform the dynamic Redis check
+        shadow_enabled = await is_shadow_mode_enabled(
+            redis, fallback=settings.shadow_mode_enabled
+        )
+
+        if not shadow_enabled:
             return response
 
         shadow_rule = getattr(request.state, "shadow_rule", None)
         shadow_reason = getattr(request.state, "shadow_reason", "")
 
         if shadow_rule:
-            redis = request.app.state.redis
             request_id = getattr(request.state, "request_id", "unknown")
             client_id = getattr(request.state, "client_id", "anonymous")
 

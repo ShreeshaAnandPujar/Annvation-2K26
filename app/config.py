@@ -1,4 +1,5 @@
 from functools import lru_cache
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -9,13 +10,13 @@ class Settings(BaseSettings):
     app_port: int = 8000
 
     # Redis
-    redis_url: str = "redis://localhost:6379/0"
+    redis_url: str
 
     # Postgres
-    database_url: str = "postgresql+asyncpg://gateway_user:gateway_pass@postgres:5432/gateway_db"
+    database_url: str
 
     # Security
-    secret_key: str = "change-me-in-production"
+    secret_key: str
 
     # Rate limiting
     rate_limit_requests: int = 100
@@ -34,6 +35,7 @@ class Settings(BaseSettings):
 
     # Shadow mode
     shadow_mode_enabled: bool = True
+    shadow_mode_redis_key: str = "config:shadow_mode_enabled"
 
     model_config = SettingsConfigDict(
         env_file=".env",

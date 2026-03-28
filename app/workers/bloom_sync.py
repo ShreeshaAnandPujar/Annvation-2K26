@@ -1,12 +1,12 @@
 # app/workers/bloom_sync.py
 import asyncio
-import logging
 
+import structlog
 from redis.asyncio import Redis
 
 from app.services.bloom_filter import BloomFilterService
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 SYNC_INTERVAL_SECONDS = 60
 
@@ -27,22 +27,16 @@ async def bloom_sync_worker(redis: Redis) -> None:
     sync interval of a new block being applied.
     """
     bloom = BloomFilterService(redis)
-    logger.info("Bloom filter sync worker started")
+    logger.info("bloom_sync_worker_started")
 
     while True:
         try:
             count = await bloom.sync_from_redis()
-            logger.info(
-                "Bloom filter synced",
-                extra={"ip_count": count}
-            )
+            logger.info("bloom_filter_synced", ip_count=count)
         except Exception as exc:
             # Log but never crash the worker — a failed sync
             # means the filter uses its last known state, which
             # is acceptable for one cycle.
-            logger.error(
-                "Bloom filter sync failed",
-                extra={"error": str(exc)}
-            )
+            logger.error("bloom_filter_sync_failed", error=str(exc))
 
         await asyncio.sleep(SYNC_INTERVAL_SECONDS)

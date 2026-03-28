@@ -17,3 +17,17 @@ migrate:
 
 makemigration:
 	docker compose exec app poetry run alembic revision --autogenerate -m "$(msg)"
+
+load-test:
+	poetry run locust -f tests/load/locustfile.py \
+		--host http://localhost:8000
+
+load-test-headless:
+	poetry run locust -f tests/load/locustfile.py \
+		--host http://localhost:8000 \
+		--headless \
+		--users 200 \
+		--spawn-rate 20 \
+		--run-time 60s \
+		--html tests/load/report.html \
+		--csv tests/load/results

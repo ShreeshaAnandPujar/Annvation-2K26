@@ -1,10 +1,18 @@
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
+
 from app.core.security import decode_access_token
 
 # Paths that don't require authentication
-PUBLIC_PATHS = {"/health", "/metrics", "/auth/login", "/auth/register", "/docs", "/openapi.json"}
+PUBLIC_PATHS = {
+    "/health",
+    "/metrics",
+    "/auth/login",
+    "/auth/register",
+    "/docs",
+    "/openapi.json",
+}
 
 
 class AuthMiddleware(BaseHTTPMiddleware):
@@ -13,7 +21,9 @@ class AuthMiddleware(BaseHTTPMiddleware):
     Skips public paths that don't require authentication.
     """
 
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
         if request.url.path in PUBLIC_PATHS:
             request.state.client_id = "anonymous"
             return await call_next(request)

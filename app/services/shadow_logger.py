@@ -1,11 +1,13 @@
 import json
 import time
-import logging
+from typing import Any
+
+import structlog
 from redis.asyncio import Redis
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
-SHADOW_LOG_TTL = 86400  # 24 hours
+SHADOW_LOG_TTL = 86400
 
 
 class ShadowLogger:
@@ -43,26 +45,32 @@ class ShadowLogger:
         }
         await self.redis.set(key, json.dumps(event), ex=SHADOW_LOG_TTL)
         logger.info(
-            "Shadow event logged",
-            extra={
-                "request_id": request_id,
-                "rule": rule_triggered,
-                "client_id": client_id,
-            }
+            "shadow_event_logged",
+            request_id=request_id,
+            rule=rule_triggered,
+            client_id=client_id,
         )
 
-    async def get_shadow_stats(self) -> dict:
+    async def get_shadow_stats(self) -> dict[str, Any]:
         """
-        Aggregate shadow events by rule to identify
-        which rules are triggering most frequently.
-        Used for threshold tuning before enforcement.
+        Aggregate shadow events by rule using a pipeline batch read.
+        Collects all keys first, then fetches values in a single round-trip
+        instead of one GET per key.
         """
         pattern = "shadow_log:*"
         stats: dict[str, int] = {}
         total = 0
 
-        async for key in self.redis.scan_iter(pattern):
-            raw = await self.redis.get(key)
+        keys = [key async for key in self.redis.scan_iter(pattern)]
+        if not keys:
+            return {"total": 0, "by_rule": {}}
+
+        pipe = self.redis.pipeline()
+        for key in keys:
+            pipe.get(key)
+        values = await pipe.execute()
+
+        for raw in values:
             if raw:
                 try:
                     event = json.loads(raw)

@@ -12,6 +12,6 @@ def test_user_defaults():
         username="testuser",
         email="test@test.com",
         hashed_password="hashed",
-        is_active=True
+        is_active=True,
     )
     assert user.is_active is True

@@ -1,10 +1,12 @@
+from typing import Any
+
 from fastapi import APIRouter, Request
-from app.schemas.auth import UserResponse
 
 router = APIRouter(prefix="/gateway", tags=["gateway"])
 
+
 @router.get("/proxy")
-async def proxy(request: Request):
+async def proxy(request: Request) -> dict[str, Any]:
     """
     Represents the upstream service endpoint.
     In production this would forward to real backend services.

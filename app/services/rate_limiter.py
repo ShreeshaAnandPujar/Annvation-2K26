@@ -1,8 +1,9 @@
 import time
-import logging
+
+import structlog
 from redis.asyncio import Redis
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 # Lua script runs atomically on the Redis server.
 # No other client can interleave between the three operations.
@@ -66,9 +67,5 @@ class RateLimiter:
         remaining = int(result[1])
 
         if not allowed:
-            logger.warning(
-                "Rate limit exceeded",
-                extra={"client_id": client_id, "limit": limit}
-            )
-
+            logger.warning("rate_limit_exceeded", client_id=client_id, limit=limit)
         return allowed, remaining

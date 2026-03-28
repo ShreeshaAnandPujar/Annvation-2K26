@@ -20,7 +20,8 @@ dependencies = [
     "python-jose[cryptography] (>=3.5.0,<4.0.0)",
     "pydantic[email] (>=2.12.5,<3.0.0)",
     "email-validator (>=2.3.0,<3.0.0)",
-    "bcrypt (>=5.0.0,<6.0.0)"
+    "bcrypt (>=5.0.0,<6.0.0)",
+    "structlog (>=25.0.0,<26.0.0)"
 ]
 
 
@@ -38,8 +39,14 @@ dev = [
     "pytest-mock (>=3.15.1,<4.0.0)",
     "ruff (>=0.15.7,<0.16.0)",
     "asgi-lifespan (>=2.1.0,<3.0.0)",
-    "python-dotenv (>=1.2.2,<2.0.0)"
+    "python-dotenv (>=1.2.2,<2.0.0)",
+    "locust (>=2.43.3,<3.0.0)",
+    "pre-commit (>=4.5.1,<5.0.0)",
+    "types-python-jose (>=3.5.0.20250531,<4.0.0.0)"
 ]
+
+[tool.poetry]
+package-mode = false
 
 [tool.ruff]
 # Target your specific pinned version
@@ -49,7 +56,10 @@ line-length = 88
 [tool.ruff.lint]
 # Enable Pyflakes (F), pycodestyle (E), isort (I), and pyupgrade (UP)
 select = ["E", "F", "I", "UP"]
-ignore = []
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/conftest.py" = ["E402"]
 
 [tool.mypy]
 python_version = "3.12"
@@ -60,13 +70,26 @@ check_untyped_defs = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 warn_return_any = true
-warn_unused_ignores = true
+warn_unused_ignores = false
 
-# Uncomment and modify this block if you install a third-party package
-# that does not have built-in type hints to prevent Mypy from crashing.
-# [[tool.mypy.overrides]]
-# module = "some_untyped_package.*"
-# ignore_missing_imports = true
+[[tool.mypy.overrides]]
+module = [
+    "pybloom_live.*"
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = [
+    "app.services.bloom_filter",
+    "app.core.redis_client"
+]
+disable_error_code = ["misc"]
+
+[[tool.mypy.overrides]]
+module = [
+    "app.config"
+]
+disable_error_code = ["call-arg"]
 
 [tool.pytest.ini_options]
 # Define where your tests will live
@@ -74,7 +97,8 @@ testpaths = ["tests"]
 
 # Automatically detect and run async tests
 asyncio_mode = "auto"
-asyncio_default_fixture_loop_scope = "function"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"
 
 # Default command line options when you run `pytest`
 # -v: verbose output

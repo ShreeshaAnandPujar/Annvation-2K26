@@ -1,6 +1,8 @@
-import pytest
 import json
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
 from app.services.shadow_logger import ShadowLogger
 
 
@@ -29,17 +31,20 @@ async def test_log_shadow_event(mock_redis):
 
 @pytest.mark.asyncio
 async def test_get_shadow_stats(mock_redis):
-    event = json.dumps({
-        "rule_triggered": "rate_limit",
-        "client_id": "client_1",
-        "path": "/api",
-        "request_id": "req_1",
-        "timestamp": 1000,
-    })
-    mock_redis.scan_iter = MagicMock(
-        return_value=async_generator(["shadow_log:req_1"])
+    event = json.dumps(
+        {
+            "rule_triggered": "rate_limit",
+            "client_id": "client_1",
+            "path": "/api",
+            "request_id": "req_1",
+            "timestamp": 1000,
+        }
     )
-    mock_redis.get = AsyncMock(return_value=event)
+    mock_redis.scan_iter = MagicMock(return_value=async_generator(["shadow_log:req_1"]))
+
+    mock_pipe = MagicMock()
+    mock_pipe.execute = AsyncMock(return_value=[event])
+    mock_redis.pipeline = MagicMock(return_value=mock_pipe)
 
     logger = ShadowLogger(mock_redis)
     stats = await logger.get_shadow_stats()

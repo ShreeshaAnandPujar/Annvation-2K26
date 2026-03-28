@@ -1,2 +1,11 @@
 .env
 .env.test
+__pycache__/
+*.pyc
+
+# Load Test Reports
+tests/load/report.html
+tests/load/results_failures.csv
+tests/load/results_exceptions.csv
+tests/load/results_stats_history.csv
+tests/load/results_stats.csv

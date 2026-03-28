@@ -1,6 +1,7 @@
 import asyncio
-import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 
 @pytest.mark.asyncio
@@ -48,6 +49,7 @@ async def test_bloom_sync_worker_survives_exception():
 
         with patch("app.workers.bloom_sync.SYNC_INTERVAL_SECONDS", 0):
             from app.workers.bloom_sync import bloom_sync_worker
+
             task = asyncio.create_task(bloom_sync_worker(mock_redis))
             await asyncio.sleep(0.1)
             task.cancel()

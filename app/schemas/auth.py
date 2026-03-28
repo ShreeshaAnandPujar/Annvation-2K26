@@ -22,5 +22,6 @@ class UserResponse(BaseModel):
     username: str
     email: str
     is_active: bool
+    role: str
 
     model_config = {"from_attributes": True}

@@ -1,9 +1,10 @@
-import time
 import statistics
-import logging
+import time
+
+import structlog
 from redis.asyncio import Redis
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger()
 
 
 class AbuseDetector:
@@ -31,10 +32,7 @@ class AbuseDetector:
         pipe.expire(user_key, window_seconds)
         await pipe.execute()
 
-        logger.info(
-            "Auth failure recorded",
-            extra={"ip": ip, "username": username}
-        )
+        logger.info("auth_failure_recorded", ip=ip, username=username)
 
     async def is_credential_stuffing(
         self,
@@ -101,12 +99,12 @@ class AbuseDetector:
             return None
 
         scores = [score for _, score in timestamps]
-        gaps = [scores[i+1] - scores[i] for i in range(len(scores) - 1)]
+        gaps = [scores[i + 1] - scores[i] for i in range(len(scores) - 1)]
 
         if len(gaps) < 2:
             return None
 
-        return statistics.stdev(gaps)
+        return float(statistics.stdev(gaps))
 
     async def is_bot_behavior(
         self,

@@ -1,7 +1,8 @@
 import os
-import pytest
-from dotenv import load_dotenv
+
 import pytest_asyncio
+from dotenv import load_dotenv
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # ── 1. Load test environment variables FIRST ─────────────────────────────────
 # Must happen before any app imports so Pydantic reads the correct values.
@@ -14,18 +15,19 @@ TEST_REDIS_URL: str = os.environ["TEST_REDIS_URL"]
 os.environ["DATABASE_URL"] = TEST_DATABASE_URL
 os.environ["REDIS_URL"] = TEST_REDIS_URL
 os.environ["APP_ENV"] = "test"
+os.environ["SHADOW_MODE_ENABLED"] = os.environ.get("SHADOW_MODE_ENABLED", "false")
 
 # ── 3. Clear settings cache so it rebuilds with the test values ───────────────
 from app.config import get_settings
+
 get_settings.cache_clear()
 
 # ── 4. App imports (safe now that env is fully configured) ────────────────────
 from asgi_lifespan import LifespanManager
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 from redis.asyncio import Redis
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
-from sqlalchemy.pool import NullPool
 from sqlalchemy import text
+from sqlalchemy.pool import NullPool
 
 from app.core.database import Base
 from app.dependencies import get_db
@@ -63,17 +65,28 @@ app.dependency_overrides[get_db] = override_get_db
 
 # ── 7. Fixtures ───────────────────────────────────────────────────────────────
 
-@pytest_asyncio.fixture(autouse=True, scope="function")
-async def reset_database():
-    """Ensure tables exist then truncate before each test.
-    TRUNCATE is faster than drop_all/create_all and avoids
-    rebuilding the schema on every test.
+
+@pytest_asyncio.fixture(autouse=True, scope="session")
+async def setup_test_schema():
+    """
+    Runs exactly ONCE at the very beginning of the test session.
+    Drops and recreates the schema to guarantee it matches the current models.
+    This completely removes the need to run Alembic on the test DB.
     """
     async with test_engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
         await conn.run_sync(Base.metadata.create_all)
-        await conn.execute(
-            text("TRUNCATE TABLE users RESTART IDENTITY CASCADE")
-        )
+    yield
+
+
+@pytest_asyncio.fixture(autouse=True, scope="function")
+async def reset_database(setup_test_schema):
+    """
+    Runs before EVERY individual test.
+    Fast truncation keeps tests isolated without the overhead of schema rebuilding.
+    """
+    async with test_engine.begin() as conn:
+        await conn.execute(text("TRUNCATE TABLE users RESTART IDENTITY CASCADE"))
     yield
 
 
@@ -119,3 +132,30 @@ async def client():
             base_url="http://test",
         ) as ac:
             yield ac
+
+
+@pytest_asyncio.fixture(scope="function")
+async def admin_token(client: AsyncClient, db_session: AsyncSession) -> str:
+    """Register a user and promote them to admin in the DB."""
+    await client.post(
+        "/auth/register",
+        json={
+            "username": "admin",
+            "email": "admin@test.com",
+            "password": "adminpass123",
+        },
+    )
+    # Promote to admin directly — simulates an ops team DB update
+    await db_session.execute(
+        text("UPDATE users SET role = 'admin' WHERE username = 'admin'")
+    )
+    await db_session.commit()
+
+    response = await client.post(
+        "/auth/login",
+        json={
+            "username": "admin",
+            "password": "adminpass123",
+        },
+    )
+    return response.json()["access_token"]
