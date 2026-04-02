@@ -5,6 +5,8 @@
 > and graduated enforcement — built from scratch without dropping in an existing
 > library.
 
+**Live demo:** https://api-gateway-with-abuse-detection.onrender.com/docs
+
 ---
 
 ## What This Demonstrates
@@ -36,7 +38,7 @@ out new detection rules.
 │                     API GATEWAY (FastAPI)                         │
 │                                                                   │
 │  1. RequestID      → UUID trace ID on every request               │
-│  2. Auth           → JWT validation, client_id attached           │
+│  2. Auth           → JWT validation, client_id + role attached    │
 │  3. BloomFilter    → O(1) bad IP + bad user-agent check           │
 │  4. RateLimit      → sliding window per authenticated client      │
 │  5. AbuseDetector  → graduated response (throttle/block)          │
@@ -68,6 +70,11 @@ See [DESIGN.md](DESIGN.md) for the full architecture diagram and Redis key schem
   attackers.
   See [DESIGN.md — Decision 3](DESIGN.md#decision-3-graduated-response-over-binary-allowblock)
 
+- **Database-backed RBAC with JWT role claims** — user roles stored in
+  PostgreSQL, embedded in JWT at login time. Admin promotion requires a direct DB
+  update and a fresh login — no server restart required.
+  See [DESIGN.md — Decision 7](DESIGN.md#decision-7-database-backed-rbac-with-jwt-role-claims)
+
 - **Shadow mode as a first-class feature** — all enforcement rules run in
   observation-only mode first. Thresholds are tuned against real traffic before
   enforcement is enabled.
@@ -80,21 +87,97 @@ See [DESIGN.md](DESIGN.md) for the full architecture diagram and Redis key schem
 From a 60-second Locust load test with 20 concurrent users (legitimate users,
 credential stuffers, and scrapers running simultaneously):
 
-| Metric | Result |
-|---|---|
-| Throughput | 59 req/s sustained |
-| Legitimate user failure rate | **0%** |
-| Credential stuffing detection | Blocked within 10 attempts |
-| P50 gateway latency | 10ms |
-| P99 gateway latency | 440ms (includes throttle delay) |
-| Shadow events logged in 60s | 740 |
+| Metric                        | Result                          |
+| ----------------------------- | ------------------------------- |
+| Throughput                    | 59 req/s sustained              |
+| Legitimate user failure rate  | **0%**                          |
+| Credential stuffing detection | Blocked within 10 attempts      |
+| P50 gateway latency           | 10ms                            |
+| P99 gateway latency           | 440ms (includes throttle delay) |
+| Shadow events logged in 60s   | 740                             |
+
+**Production verification** (live on Render, Upstash Redis):
+
+150 parallel requests against the live deployment confirmed the sliding window
+enforces exactly at the configured limit:
+
+```
+100 × 200 OK    ← exactly the rate limit
+ 50 × 429       ← every request over the limit rejected
+```
+
+Prometheus confirmed: `rate_limit_rejections_total{client_id="demo"} 200.0`
+after two parallel test runs. The `client_id` label proves the JWT identity is
+tracked, not the IP address.
+
+---
+
+## Production Deployment Notes
+
+### Rate Limiting: Why Sequential curl Fails as a Test
+
+A common mistake when testing rate limiting on a remote deployment is running
+requests sequentially:
+
+```bash
+# This will NOT trigger rate limiting on a remote host
+for i in $(seq 1 300); do curl $BASE/gateway/proxy; done
+```
+
+Over a network connection (Render free tier adds ~500ms per request), 300
+sequential calls take roughly 5 minutes. The sliding window only counts requests
+within the last 60 seconds — at any point only ~60 requests are in the window,
+well under the 100-request limit. The limiter is working correctly; the test
+method is wrong.
+
+The correct test runs requests in parallel so they all fall within the same
+60-second window:
+
+```bash
+for i in $(seq 1 150); do
+  curl -s -o /dev/null -w "%{http_code}\n" \
+    $BASE/gateway/proxy \
+    -H "Authorization: Bearer $TOKEN" &
+done | sort | uniq -c
+# Output: 100 × 200, 50 × 429
+```
+
+### Admin Role Promotion
+
+Admin access is database-backed. To promote a user:
+
+```sql
+UPDATE users SET role = 'admin' WHERE username = 'target';
+```
+
+The user logs in again and receives a JWT with `"role": "admin"`. No server
+restart required. The old token with `"role": "user"` receives 403 on admin
+endpoints until it expires.
+
+### Runtime Shadow Mode Toggle
+
+Shadow mode can be toggled without redeployment via Redis:
+
+```bash
+# Enable shadow mode (observe but don't block)
+curl -X POST $BASE/admin/shadow-mode?enabled=true \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+
+# Disable shadow mode (enforce blocks)
+curl -X POST $BASE/admin/shadow-mode?enabled=false \
+  -H "Authorization: Bearer $ADMIN_TOKEN"
+```
+
+The middleware reads the Redis key `config:shadow_mode_enabled` on every request,
+falling back to the `SHADOW_MODE_ENABLED` environment variable if the key is absent.
 
 ---
 
 ## Quick Start
 
 ```bash
-git clone <repo-url> && cd agad
+git clone https://github.com/macaulaypraise/api-gateway-with-abuse-detection
+cd api-gateway-with-abuse-detection
 cp .env.example .env
 make dev
 ```
@@ -103,6 +186,7 @@ The full stack — FastAPI, Redis, PostgreSQL, and Prometheus — starts in Dock
 No manual configuration required.
 
 Verify everything is running:
+
 ```bash
 make check-infra
 ```
@@ -111,23 +195,23 @@ make check-infra
 
 ## API Reference
 
-Interactive API documentation is available at `http://localhost:8000/docs` once
-the stack is running.
+Interactive API documentation: `http://localhost:8000/docs` (local) or
+`https://api-gateway-with-abuse-detection.onrender.com/docs` (live).
 
-Key endpoints:
-
-| Method | Path | Description |
-|---|---|---|
-| POST | `/auth/register` | Register a new user |
-| POST | `/auth/login` | Login and receive JWT token |
-| GET | `/gateway/proxy` | Authenticated gateway endpoint |
-| GET | `/health` | Service health with Redis status |
-| GET | `/metrics` | Prometheus metrics |
-| GET | `/admin/shadow-stats` | Aggregate shadow log by rule |
-| POST | `/admin/block-ip/{ip}` | Hard block an IP (Bloom filter) |
-| POST | `/admin/soft-block-ip/{ip}` | Temporary block with TTL |
-| POST | `/admin/block-agent` | Block a user-agent string |
-| GET | `/admin/block-status/{ip}` | Check current block state |
+| Method | Path                        | Auth required | Description                              |
+| ------ | --------------------------- | ------------- | ---------------------------------------- |
+| POST   | `/auth/register`            | None          | Register a new user (role: user)         |
+| POST   | `/auth/login`               | None          | Login and receive JWT with role claim    |
+| GET    | `/gateway/proxy`            | User          | Authenticated gateway endpoint           |
+| GET    | `/health`                   | None          | Service health, Redis status, pool stats |
+| GET    | `/metrics`                  | None          | Prometheus metrics                       |
+| GET    | `/admin/shadow-stats`       | Admin         | Aggregate shadow log by rule             |
+| POST   | `/admin/block-ip/{ip}`      | Admin         | Hard block — IP added to Bloom filter    |
+| POST   | `/admin/soft-block-ip/{ip}` | Admin         | Temporary block with TTL                 |
+| DELETE | `/admin/soft-block-ip/{ip}` | Admin         | Lift a soft block manually               |
+| POST   | `/admin/block-agent`        | Admin         | Block a user-agent string                |
+| GET    | `/admin/block-status/{ip}`  | Admin         | Check current block state of an IP       |
+| POST   | `/admin/shadow-mode`        | Admin         | Toggle shadow mode at runtime            |
 
 ---
 
@@ -144,7 +228,7 @@ poetry run pytest tests/ -v
 poetry run pytest tests/ --cov=app --cov-report=term-missing
 ```
 
-Current coverage: **93%** across 63 tests.
+Current coverage: **93%** across **67 tests**.
 
 ---
 
@@ -162,26 +246,31 @@ Recommended configuration: 20 users, 2/second spawn rate, mix of
 `LegitimateUser`, `CredentialStuffer`, and `Scraper` scenarios.
 
 What to observe during the test:
+
 - Credential stuffers escalate from 401 → 429 as the threshold is hit
 - Legitimate users maintain 0% failure rate throughout
-- Shadow stats grow at `/admin/shadow-stats` with `Retry-After` token
+- Shadow stats accumulate at `/admin/shadow-stats`
+- Prometheus counters increment at `/metrics`
 
 ---
 
 ## Stack
 
-| Component | Technology |
-|---|---|
-| Web framework | FastAPI + Uvicorn |
-| Rate limit state | Redis 7 (sorted sets + Lua scripts) |
-| IP/agent filtering | Bloom filter (pybloom-live) |
-| Auth | JWT (python-jose) + bcrypt |
-| Database | PostgreSQL 15 + SQLAlchemy (async) |
-| Migrations | Alembic |
-| Metrics | Prometheus |
-| Testing | pytest + pytest-asyncio + Locust |
-| Dependency management | Poetry |
-| Containerisation | Docker Compose |
+| Component             | Technology                                             |
+| --------------------- | ------------------------------------------------------ |
+| Web framework         | FastAPI + Uvicorn                                      |
+| Rate limit state      | Redis 7 (sorted sets + Lua scripts)                    |
+| IP/agent filtering    | Bloom filter (pybloom-live)                            |
+| Auth                  | JWT (python-jose) + bcrypt (asyncio.to_thread)         |
+| Database              | PostgreSQL 15 + SQLAlchemy (async)                     |
+| Migrations            | Alembic                                                |
+| Metrics               | Prometheus                                             |
+| Logging               | structlog (JSON output)                                |
+| Testing               | pytest + pytest-asyncio + Locust                       |
+| Dependency management | Poetry                                                 |
+| Containerisation      | Docker Compose                                         |
+| CI                    | GitHub Actions                                         |
+| Production            | Render (app) + Upstash (Redis) + Supabase (PostgreSQL) |
 
 ---
 
@@ -190,12 +279,12 @@ What to observe during the test:
 ```
 agad/
 ├── app/
-│   ├── core/           # Redis client, DB session, security, exceptions
+│   ├── core/           # Redis client, DB session, security, metrics, logging
 │   ├── middleware/      # Six-step middleware chain
 │   ├── routers/         # Auth, gateway, admin endpoints
-│   ├── services/        # Business logic — rate limiter, abuse detector,
-│   │                    # bloom filter, graduated response, shadow logger
-│   ├── models/          # SQLAlchemy ORM models
+│   ├── services/        # Rate limiter, abuse detector, bloom filter,
+│   │                    # graduated response, shadow logger
+│   ├── models/          # SQLAlchemy ORM models (User with UserRole enum)
 │   ├── schemas/         # Pydantic request/response schemas
 │   └── workers/         # Bloom filter sync background worker
 ├── tests/
@@ -204,6 +293,8 @@ agad/
 │   └── load/            # Locust load test scenarios
 ├── migrations/          # Alembic migration files
 ├── DESIGN.md            # Architecture decisions and trade-offs
+├── CHANGELOG.md         # Version history
+├── CONTRIBUTING.md      # Local setup and contribution guide
 └── docker-compose.yml   # Full local development stack
 ```
 
@@ -212,6 +303,7 @@ agad/
 ## Design Document
 
 See [DESIGN.md](DESIGN.md) for:
+
 - Full problem statement and constraints
 - Every key decision with alternatives considered and trade-offs
 - Known limitations

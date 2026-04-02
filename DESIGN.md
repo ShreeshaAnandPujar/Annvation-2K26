@@ -30,6 +30,7 @@ makes this project rich for discussion and production-relevant.
 | Rules must be updatable | Without redeployment (thresholds in config) |
 | State must be shared | Across multiple gateway instances (no in-process state) |
 | Shadow mode | All rules must be validatable before enforcement |
+| Admin access | Role-based, DB-backed, no restart required for promotion |
 
 ---
 
@@ -48,7 +49,7 @@ makes this project rich for discussion and production-relevant.
 │  │         Middleware Chain (executes in order)           │     │
 │  │                                                        │     │
 │  │  1. RequestID       → attach UUID trace ID             │     │
-│  │  2. Auth            → validate JWT, set client_id      │     │
+│  │  2. Auth            → validate JWT, set client_id+role │     │
 │  │  3. BloomFilter     → O(1) bad IP + bad agent check    │     │
 │  │  4. RateLimit       → sliding window per client_id     │     │
 │  │  5. AbuseDetector   → graduated response engine        │     │
@@ -72,6 +73,7 @@ REDIS LAYER (shared state across all gateway instances)
 │  shadow_log:{request_id}   ← debug/tuning data       │
 │  known_bad_ips             ← Bloom filter source     │
 │  abusive_agents            ← user-agent fingerprint  │
+│  config:shadow_mode_enabled← runtime toggle flag     │
 └──────────────────────────────────────────────────────┘
 
 BLOOM FILTER (in-memory, synced from Redis every 60s)
@@ -106,6 +108,12 @@ req/window with millisecond timestamps, each key holds up to 100 entries at ~50
 bytes each — roughly 5KB per active client. Acceptable at the scale this system
 targets.
 
+**Production note:** Testing rate limiting on a remote deployment requires
+parallel requests, not sequential ones. Sequential curl calls over a network
+connection (~500ms per request) mean only ~60 requests land in any 60-second
+window regardless of how many you send. The correct test fires requests
+concurrently so they all compete within the same window.
+
 ---
 
 ### Decision 2: Bloom Filter for Known-Bad IP and User-Agent Lookup
@@ -123,6 +131,12 @@ requires approximately 1.1MB of memory.
 
 The worst case is a legitimate IP or user-agent being incorrectly flagged as
 malicious. Shadow mode catches these before enforcement is enabled.
+
+**Critical implementation detail:** The `block-ip` and `block-agent` admin routes
+must update `request.app.state.bloom` directly — the live instance used by the
+middleware. Creating a new `BloomFilterService(redis)` per request writes to Redis
+correctly but leaves the middleware's in-memory filter unchanged until the next
+60-second sync cycle, creating a 60-second enforcement gap.
 
 **Trade-off:** The filter is probabilistic — it can produce false positives but
 never false negatives. A confirmed bad IP will always be caught. The 0.1% false
@@ -204,8 +218,9 @@ that serve such clients.
 
 ### Decision 6: Shadow Mode as a First-Class Feature
 
-**Chosen:** All enforcement rules have a shadow mode toggle that logs would-be
-blocks without enforcing them
+**Chosen:** All enforcement rules have a runtime-togglable shadow mode that logs
+would-be blocks without enforcing them. Toggle is stored in Redis, readable by
+all gateway instances without restart.
 
 **Alternatives considered:** Staged rollout by percentage, feature flags per rule,
 no shadow mode
@@ -219,10 +234,47 @@ measure precision before switching to enforcement.
 The `GET /admin/shadow-stats` endpoint aggregates shadow events by rule, giving
 operators the data needed to tune thresholds confidently.
 
+The toggle is stored in Redis key `config:shadow_mode_enabled` and read at
+request time by both `AbuseDetectorMiddleware` and `ShadowModeMiddleware`. This
+means enabling or disabling shadow mode takes effect on the next request with no
+deployment required.
+
 **Trade-off:** Shadow mode adds latency to the middleware chain even when not
 blocking — the event must still be logged to Redis. At 24-hour TTL and ~500 bytes
-per event, this is acceptable. Shadow mode should be disabled in production once
-thresholds are validated.
+per event, this is acceptable.
+
+---
+
+### Decision 7: Database-Backed RBAC with JWT Role Claims
+
+**Chosen:** `UserRole` enum stored in PostgreSQL `users.role` column; role
+embedded in JWT at login; `require_admin` reads the JWT claim
+
+**Alternatives considered:** Hardcoded `ADMIN_USERNAMES` env var, separate
+admin database, API key with elevated scope
+
+**Why this choice:** The `ADMIN_USERNAMES` approach requires a server restart
+every time the admin list changes and mixes infrastructure configuration with
+user data. Database-backed roles allow promotion and demotion without touching
+the deployment.
+
+The JWT-embedded claim avoids a database query on every admin request. When a
+user's role changes in the database, they simply log in again to receive a token
+with the updated claim. The old token expires naturally (30-minute TTL).
+
+The HTTP status code split is intentional and semantically correct:
+- **401** — missing or invalid token (not authenticated)
+- **403** — valid token, insufficient role (authenticated but not authorised)
+
+**Promotion workflow:**
+```sql
+UPDATE users SET role = 'admin' WHERE username = 'target';
+```
+User logs in again. New JWT contains `"role": "admin"`. No server restart.
+
+**Trade-off:** A revoked token remains valid until expiry (up to 30 minutes).
+This is the standard trade-off for stateless JWTs. For immediate revocation, a
+token blocklist in Redis would be required.
 
 ---
 
@@ -241,15 +293,25 @@ Results from 60-second Locust load test with 20 concurrent users (7 legitimate,
 | P99 gateway latency | 440ms (includes throttle delay) |
 | Shadow events logged in 60s | 740 |
 
+Production verification on live deployment (Render + Upstash Redis):
+
+| Test | Result |
+|---|---|
+| 150 parallel requests (first run) | 100 × 200, 50 × 429 |
+| 150 parallel requests (second run, window full) | 150 × 429 |
+| `rate_limit_rejections_total` after both runs | 200.0 |
+| `client_id` label on counter | `"demo"` — JWT identity, not IP |
+
 ---
 
 ## Known Limitations
 
 **Redis as single point of failure.** If Redis becomes unavailable, the rate
 limiter, abuse detector, and soft block checks all fail. The current implementation
-does not have a fallback strategy. A production deployment should use Redis
-Sentinel or Redis Cluster, and the gateway should be configured with a fail-open
-or fail-closed policy depending on the business risk model.
+retries on startup with exponential backoff but has no in-flight fallback. A
+production deployment should use Redis Sentinel or Redis Cluster, and the gateway
+should be configured with a fail-open or fail-closed policy depending on the
+business risk model.
 
 **Shared IP in multi-tenant environments.** Corporate NATs cause IP-based signals
 to be unreliable. The current system uses IP as a primary signal. A more robust
@@ -264,6 +326,10 @@ enforcement is enabled, but the operator must actively monitor shadow stats.
 requests from a client before it can compute entropy. A bot that registers a new
 account on each session will evade entropy detection. Pairing entropy with
 user-agent analysis and registration rate limiting addresses this.
+
+**JWT role revocation.** A user whose role is downgraded in the database retains
+their elevated JWT until it expires (up to 30 minutes). Immediate revocation
+requires a Redis-based token blocklist.
 
 **Token expiry during load tests.** JWT tokens have a 30-minute expiry. Long-running
 load tests will see authentication failures as tokens expire. This is correct
@@ -297,3 +363,7 @@ and reduce the false positive rate over time.
 gateway instances as peers sharing a single Redis. In a multi-region deployment,
 cross-datacenter Redis reads add latency. Each datacenter should enforce local rate
 limits with periodic global reconciliation.
+
+**Token blocklist for immediate role revocation.** A Redis SET of invalidated JWT
+JTI claims, checked on every request, would allow immediate access revocation
+without waiting for token expiry.
