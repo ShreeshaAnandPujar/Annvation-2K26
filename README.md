@@ -1,5 +1,8 @@
-# API Gateway with Abuse Detection (AGAD)
+# Annvation-2K26 — Team Rudranix
 
+## API Gateway with Abuse Detection (AGAD)
+
+> Developed by **Team Rudranix** for **Annvation-2K26**.  
 > A production-grade API gateway that actively distinguishes legitimate users
 > from automated attackers using behavioral analysis, probabilistic filtering,
 > and graduated enforcement — built from scratch without dropping in an existing
@@ -176,8 +179,8 @@ falling back to the `SHADOW_MODE_ENABLED` environment variable if the key is abs
 ## Quick Start
 
 ```bash
-git clone https://github.com/macaulaypraise/api-gateway-with-abuse-detection
-cd api-gateway-with-abuse-detection
+git clone https://github.com/ShreeshaAnandPujar/Annvation-2K26.git
+cd Annvation-2K26
 cp .env.example .env
 make dev
 ```
@@ -308,3 +311,9 @@ See [DESIGN.md](DESIGN.md) for:
 - Every key decision with alternatives considered and trade-offs
 - Known limitations
 - What I would change at 10x scale
+
+---
+
+## Team & Credits
+
+Developed by **Team Rudranix** for **Annvation-2K26**.

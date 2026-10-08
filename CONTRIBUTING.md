@@ -11,8 +11,8 @@
 ### Setup
 
 ```bash
-git clone https://github.com/macaulaypraise/api-gateway-with-abuse-detection
-cd api-gateway-with-abuse-detection
+git clone https://github.com/ShreeshaAnandPujar/Annvation-2K26.git
+cd Annvation-2K26
 poetry install
 cp .env.example .env
 cp .env.example .env.test  # edit TEST_DATABASE_URL and TEST_REDIS_URL

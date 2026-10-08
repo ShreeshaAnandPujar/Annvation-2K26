@@ -3,7 +3,7 @@ name = "agad"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "macaulaypraise",email = "Macaulaypraise37@gmail.com"}
+    {name = "Team Rudranix", email = "86948511+ShreeshaAnandPujar@users.noreply.github.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.12"
