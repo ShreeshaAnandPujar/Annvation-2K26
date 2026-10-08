@@ -21,21 +21,25 @@ class BloomFilterMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         path = request.url.path
-        # Allow internal telemetry, dashboard, and health routes
-        if path in (
-            "/",
-            "/dashboard",
-            "/api/dashboard-stats",
-            "/api/block-ip",
-            "/api/unblock-ip",
-            "/api/clear-all-blocks",
-            "/api/clear-feed",
-            "/health",
-            "/metrics",
-            "/docs",
-            "/openapi.json",
-            "/favicon.ico",
-        ) or path.startswith("/docs") or path.startswith("/redoc"):
+        # Allow internal telemetry, dashboard, and administrative routes
+        if (
+            path in (
+                "/",
+                "/dashboard",
+                "/health",
+                "/metrics",
+                "/docs",
+                "/openapi.json",
+                "/favicon.ico",
+            )
+            or path.startswith("/api/autonomous-agent")
+            or path.startswith("/api/dashboard")
+            or path.startswith("/api/block-ip")
+            or path.startswith("/api/unblock-ip")
+            or path.startswith("/api/clear-")
+            or path.startswith("/docs")
+            or path.startswith("/redoc")
+        ):
             return await call_next(request)
 
         client_ip = getattr(

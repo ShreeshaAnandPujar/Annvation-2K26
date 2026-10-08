@@ -109,6 +109,26 @@ cat /tmp/resp.json
 echo ""
 
 echo ""
+echo "----------------------------------------------------------"
+echo "[5] ATTACK: Web Scanner & Malicious Fuzzing Probes"
+echo "----------------------------------------------------------"
+echo "[*] Sending fuzzer paths (/.env, /wp-admin, /actuator, /phpmyadmin)..."
+for probe in "/.env" "/wp-admin" "/actuator/health" "/phpmyadmin"; do
+  STATUS=$(curl -s -D /tmp/hdrs.txt -o /tmp/resp.json -w "%{http_code}" "$BASE_URL$probe")
+  CAT=$(grep -i "x-threat-category:" /tmp/hdrs.txt | tr -d '\r')
+  SCORE=$(grep -i "x-threat-score:" /tmp/hdrs.txt | tr -d '\r')
+  ACTION=$(grep -i "x-threat-action:" /tmp/hdrs.txt | tr -d '\r')
+  echo " -> Probe '$probe': HTTP $STATUS | $SCORE | $CAT | $ACTION"
+  if [ "$STATUS" = "429" ] || [ "$STATUS" = "403" ]; then
+    echo " [!] AUTONOMOUS AI AGENT BLOCKED MALICIOUS SCANNER PROBE!"
+    cat /tmp/resp.json
+    echo ""
+    break
+  fi
+  sleep 0.15
+done
+
+echo ""
 echo "=========================================================="
 echo "Demonstration complete for mode: $MODE against $TARGET_IP"
 echo "=========================================================="

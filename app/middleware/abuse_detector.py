@@ -45,20 +45,22 @@ class AbuseDetectorMiddleware(BaseHTTPMiddleware):
         )
         path = request.url.path
 
-        # Ignore internal telemetry and dashboard routes from threat evaluation
+        # Ignore internal telemetry, dashboard, and administrative routes from threat evaluation
         if (
             path in (
                 "/",
                 "/dashboard",
-                "/api/dashboard-stats",
-                "/api/unblock-ip",
-                "/api/clear-all-blocks",
                 "/health",
                 "/metrics",
                 "/docs",
                 "/openapi.json",
                 "/favicon.ico",
             )
+            or path.startswith("/api/autonomous-agent")
+            or path.startswith("/api/dashboard")
+            or path.startswith("/api/block-ip")
+            or path.startswith("/api/unblock-ip")
+            or path.startswith("/api/clear-")
             or path.startswith("/docs")
             or path.startswith("/redoc")
         ):

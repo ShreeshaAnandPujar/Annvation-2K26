@@ -116,16 +116,37 @@ python3 python_attack.py --host 192.168.64.1 --target gateway --attack all
 
 ---
 
+## 🤖 24/7 Autonomous AI Agent & Defense Demonstration
+
+Pygenic Arc features a self-governing **Autonomous AI Threat Sentinel** operating 24/7 at the perimeter:
+1. **Autonomous Auto-Blocking**: When malicious behaviors are detected from an attacking IP (Kali Linux VM), the AI Agent immediately computes attack attribution confidence and enforces an autonomic perimeter ban across API Gateway and Bloom Filter.
+2. **Autonomous Monitoring ON / OFF Toggle**:
+   - In the SOC Dashboard (`http://localhost:8000/`), use the **AUTONOMOUS MONITORING [ON / OFF]** toggle.
+   - **Mode ON**: AI Agent automatically quarantines attacker IPs with zero human intervention.
+   - **Mode OFF (Standby)**: Passive monitoring mode where attacks are flagged and scored on the radar, but bans require manual approval.
+3. **Real-time AI Decision Stream**:
+   - The dashboard displays a live feed of the AI Agent's explainable thought process:
+     - `Observation`: Multi-failure or low entropy anomaly detection.
+     - `Analysis`: Mathematical feature contribution and confidence calculation.
+     - `Verdict`: Critical threat confirmation with confidence score.
+     - `Mitigation Applied`: Automated perimeter quarantine with TTL.
+
+---
+
 ## 🏆 Key Talking Points for Evaluators & Mentors
 
-1. **Defense-in-Depth vs Static Rate Limiting**:
+1. **24/7 Self-Governing Autonomous AI Sentinel**:
+   - Autonomous background patrol loop constantly analyzes sliding-window telemetry.
+   - Operators have full executive control with an instant **Autonomous ON/OFF switch**.
+
+2. **Defense-in-Depth vs Static Rate Limiting**:
    - Traditional WAFs only count requests per second (RPS).
    - Pygenic Arc uses **sliding window entropy**, **dual-axis failure correlation**, and **Markov transition matrices** to detect low-and-slow automated attacks that slip under static rate limits.
 
-2. **Zero False Positives for Human Bursts**:
+3. **Zero False Positives for Human Bursts**:
    - Normal users generating legitimate bursts (e.g. during a flash sale) exhibit human inter-arrival variance and standard workflow navigation (`/products -> /cart/add -> /checkout`). The engine scores them `BENIGN` or `BENIGN_BURST`.
 
-3. **Explainability & SOC Telemetry**:
+4. **Explainability & SOC Telemetry**:
    - Every mitigation comes with rich structured evidence:
      `(risk_score, behaviour_category, evidence)`
    - Evaluators can view exact mathematical reasons (timing entropy ms, ID sequences, Markov log-likelihood) directly in the UI.

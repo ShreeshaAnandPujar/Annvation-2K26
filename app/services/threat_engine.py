@@ -421,8 +421,20 @@ class BehavioralThreatEngine:
             if stuffing_risk == 0 and enumeration_risk == 0 and sequence_risk < 0.25:
                 is_benign_burst = True
 
+        # ── SIGNAL F: Security Scanner & Malicious Fuzzing Signatures ─────
+        scanner_risk = 0.0
+        suspicious_patterns = [
+            r"\.\./", r"etc/passwd", r"wp-", r"\.env", r"\.git", r"phpmyadmin",
+            r"actuator", r"select.*from", r"union.*select", r"<script", r"exec\(",
+            r"/eval", r"/cmd", r"/shell"
+        ]
+        if any(re.search(pat, path, re.IGNORECASE) for pat in suspicious_patterns):
+            scanner_risk = 0.96
+            reasons.append(f"Malicious scanner / web fuzzer probe pattern detected in URI: '{path}'")
+        feature_scores["scanner_probe"] = scanner_risk
+
         # ── AGGREGATE RISK SCORE & CATEGORIZATION ─────────────────────────
-        max_threat = max(stuffing_risk, scraping_risk, enumeration_risk, sequence_risk)
+        max_threat = max(stuffing_risk, scraping_risk, enumeration_risk, sequence_risk, scanner_risk)
 
         if is_benign_burst:
             category = BehaviourCategory.BENIGN_BURST
@@ -430,7 +442,9 @@ class BehavioralThreatEngine:
             action = EnforcementAction.ALLOWED
             explanation = "High-velocity traffic validated as legitimate human burst (natural timing variance and compliant workflow transitions)."
         elif max_threat >= 0.70:
-            if stuffing_risk >= 0.70:
+            if scanner_risk >= 0.70:
+                category = BehaviourCategory.AUTOMATED_BOT
+            elif stuffing_risk >= 0.70:
                 category = BehaviourCategory.CREDENTIAL_STUFFING
             elif enumeration_risk >= 0.70:
                 category = BehaviourCategory.ENDPOINT_ENUMERATION
@@ -444,7 +458,9 @@ class BehavioralThreatEngine:
             self.local_store.block_ip(ip, category=category, ttl_seconds=180)
             explanation = f"High-confidence threat detected [{category.value}]. Automatic soft-block enforced with Retry-After."
         elif max_threat >= 0.40:
-            if max_threat == scraping_risk:
+            if scanner_risk >= 0.40:
+                category = BehaviourCategory.AUTOMATED_BOT
+            elif max_threat == scraping_risk:
                 category = BehaviourCategory.SCRAPING
             elif max_threat == stuffing_risk:
                 category = BehaviourCategory.CREDENTIAL_STUFFING
@@ -500,6 +516,18 @@ class BehavioralThreatEngine:
         self.recent_events.insert(0, event_record)
         if len(self.recent_events) > 100:
             self.recent_events.pop()
+
+        # Telemetry ingestion by Autonomous AI Threat Sentinel
+        try:
+            from app.services.autonomous_agent import autonomous_agent
+            autonomous_agent.process_telemetry(
+                ip=ip,
+                client_id=client_id,
+                path=path,
+                verdict=verdict_obj,
+            )
+        except Exception:
+            pass
 
         return verdict_obj
 
@@ -654,4 +682,10 @@ class BehavioralThreatEngine:
 
 
 threat_engine = BehavioralThreatEngine()
+
+try:
+    from app.services.autonomous_agent import autonomous_agent
+    autonomous_agent.set_dependencies(threat_engine)
+except Exception:
+    pass
 

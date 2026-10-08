@@ -118,8 +118,25 @@ def attack_sequence_bypass(base_url: str):
     print(f"  Response: {body2}")
 
 
+def attack_scanner_fuzzing(base_url: str):
+    print(f"\n[5] LAUNCHING SCANNER & FUZZING PROBES on {base_url}")
+    headers = {"X-Forwarded-For": "198.51.100.55", "X-Client-ID": "fuzzer_scanner"}
+    probes = ["/.env", "/wp-admin", "/actuator/health", "/phpmyadmin", "/api/v1/debug"]
+    for path in probes:
+        url = f"{base_url}{path}"
+        status, body, h = send_http(url, method="GET", headers=headers)
+        score = h.get("x-threat-score", "N/A (Direct)")
+        cat = h.get("x-threat-category", "N/A")
+        action = h.get("x-threat-action", "N/A")
+        print(f"  Fuzzing Probe '{path}': HTTP {status} | Score: {score} | Category: {cat} | Action: {action}")
+        if status in (429, 403):
+            print(f"  >>> AUTONOMOUS AI AGENT BLOCKED MALICIOUS SCANNER PROBE! Category: {cat}")
+            break
+        time.sleep(0.12)
+
+
 def run_benign(base_url: str):
-    print(f"\n[5] RUNNING LEGITIMATE HUMAN FLOW on {base_url}")
+    print(f"\n[6] RUNNING LEGITIMATE HUMAN FLOW on {base_url}")
     headers = {"X-Forwarded-For": "198.51.100.99", "X-Client-ID": "valid_user"}
     flow = [
         ("POST", "/auth/login", {"username": "admin", "password": "admin123"}),
@@ -141,7 +158,7 @@ def main():
     parser.add_argument("--host", default="192.168.64.1", help="Host IP running Gateway/Target App (e.g. 192.168.64.1 or 10.0.11.104)")
     parser.add_argument("--target", choices=["direct", "gateway"], default="gateway",
                         help="'direct' hits vulnerable app (8001); 'gateway' hits protected gateway (8000/gateway)")
-    parser.add_argument("--attack", choices=["stuffing", "scraping", "idor", "sequence", "benign", "all"], default="all")
+    parser.add_argument("--attack", choices=["stuffing", "scraping", "idor", "sequence", "scanner", "benign", "all"], default="all")
     args = parser.parse_args()
 
     base_url = f"http://{args.host}:8001" if args.target == "direct" else f"http://{args.host}:8000/gateway"
@@ -157,6 +174,8 @@ def main():
         attack_idor(base_url)
     if args.attack in ("sequence", "all"):
         attack_sequence_bypass(base_url)
+    if args.attack in ("scanner", "all"):
+        attack_scanner_fuzzing(base_url)
     if args.attack in ("benign", "all"):
         run_benign(base_url)
 

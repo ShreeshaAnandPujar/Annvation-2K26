@@ -45,21 +45,35 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.state.bloom = BloomFilterService(app.state.redis)
     await app.state.bloom.sync_from_redis()
 
-    # Start background sync worker as a non-blocking task
+    # Start background sync worker and 24/7 Autonomous AI Security Sentinel
+    from app.services.autonomous_agent import autonomous_agent
+    autonomous_agent.set_dependencies(threat_engine=None, bloom_service=app.state.bloom, redis_client=app.state.redis)
+    from app.services.threat_engine import threat_engine
+    autonomous_agent.set_dependencies(threat_engine=threat_engine, bloom_service=app.state.bloom, redis_client=app.state.redis)
+
     sync_task = asyncio.create_task(
         bloom_sync_worker(app.state.redis),
         name="bloom_sync_worker",
     )
-    logger.info("Application started")
+    sentinel_task = asyncio.create_task(
+        autonomous_agent.run_patrol_loop(),
+        name="autonomous_ai_sentinel_patrol",
+    )
+    logger.info("Application started with 24/7 Autonomous AI Security Sentinel Active")
 
     yield
 
     # ── Shutdown ──────────────────────────────────────────────
     sync_task.cancel()
+    sentinel_task.cancel()
     try:
         await sync_task
     except asyncio.CancelledError:
         logger.info("Bloom sync worker stopped cleanly")
+    try:
+        await sentinel_task
+    except asyncio.CancelledError:
+        logger.info("Autonomous AI Sentinel stopped cleanly")
 
     await close_redis_client(app.state.redis)
     logger.info("Application shutdown")
