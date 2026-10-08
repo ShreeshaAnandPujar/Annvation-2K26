@@ -602,9 +602,11 @@ class BehavioralThreatEngine:
             cat_val = v.get("behaviour_category", "BENIGN")
             cat_counts[cat_val] += 1
 
-        # Attacker Profiles (Prioritizing external/remote IPs like Kali VM)
+        # Attacker Profiles (Live real telemetry from Localhost and Remote VM)
         attacker_profiles = []
-        for ip, count in sorted(self.local_store.ip_request_counts.items(), key=lambda x: x[1], reverse=True):
+        all_ips = set(self.local_store.ip_request_counts.keys()).union(self.local_store.blocked_ips.keys())
+        for ip in sorted(all_ips, key=lambda x: (1 if self.local_store.is_blocked(x)[0] else 0, self.local_store.ip_request_counts.get(x, 0)), reverse=True):
+            count = self.local_store.ip_request_counts.get(ip, 0)
             is_blocked, blocked_cat, ttl = self.local_store.is_blocked(ip)
             last_verdict = self.local_store.ip_latest_verdict.get(ip, {})
             auth_fails = self.local_store.failed_auth_ip.get(ip, 0)
@@ -624,7 +626,7 @@ class BehavioralThreatEngine:
 
             attacker_profiles.append({
                 "ip": ip,
-                "is_external": ip not in ("127.0.0.1", "localhost"),
+                "is_external": ip not in ("127.0.0.1", "localhost", "::1"),
                 "total_requests": count,
                 "auth_failures": auth_fails,
                 "status": status_label,
@@ -634,6 +636,7 @@ class BehavioralThreatEngine:
                 "last_seen_sec_ago": round(now - self.local_store.ip_last_seen.get(ip, now), 1),
                 "recent_paths": self.local_store.request_paths.get(ip, [])[-5:],
             })
+
 
         return {
             "total_requests": self.total_requests,
@@ -739,9 +742,14 @@ class BehavioralThreatEngine:
         self.local_store.request_paths.clear()
         self.local_store.request_times.clear()
         self.local_store.status_codes.clear()
+        self.local_store.ip_request_counts.clear()
+        self.local_store.ip_last_seen.clear()
+        self.local_store.ip_latest_verdict.clear()
         self.recent_events.clear()
+        self.total_requests = 0
         self.total_blocked = 0
         self.total_throttled = 0
+
 
 
 threat_engine = BehavioralThreatEngine()

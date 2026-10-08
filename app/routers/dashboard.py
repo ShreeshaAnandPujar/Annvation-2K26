@@ -103,11 +103,16 @@ async def unblock_ip(req: UnblockRequest, request: Request):
 
 
 @router.post("/api/clear-all-blocks")
+@router.post("/api/clear-all")
+@router.post("/api/clear-radar")
 async def clear_all_blocks(request: Request):
     """Clears all active blocks and resets historical tracking for clean test runs."""
     count = len(threat_engine.local_store.blocked_ips)
     threat_engine.clear_all()
     autonomous_agent.action_log.clear()
+    autonomous_agent.total_evaluations = 0
+    autonomous_agent.total_autonomous_bans = 0
+    autonomous_agent.total_autonomous_throttles = 0
     bloom = getattr(request.app.state, "bloom", None)
     redis = getattr(request.app.state, "redis", None)
     if bloom and redis:
@@ -513,11 +518,22 @@ async def dashboard_page(request: Request):
       display: flex;
       flex-direction: column;
       gap: 0.75rem;
-      transition: all 0.2s;
+      transition: all 0.25s ease-in-out;
+    }}
+    .attacker-card.is-clean {{
+      border-color: rgba(0, 230, 118, 0.4);
+      box-shadow: 0 0 15px rgba(0, 230, 118, 0.1);
+      background: linear-gradient(135deg, rgba(14, 20, 36, 0.7), rgba(0, 40, 20, 0.25));
+    }}
+    .attacker-card.is-suspicious {{
+      border-color: rgba(255, 184, 0, 0.6);
+      box-shadow: 0 0 18px rgba(255, 184, 0, 0.18);
+      background: linear-gradient(135deg, rgba(14, 20, 36, 0.7), rgba(50, 40, 0, 0.25));
     }}
     .attacker-card.is-blocked {{
-      border-color: rgba(255, 51, 102, 0.6);
-      box-shadow: 0 0 20px rgba(255, 51, 102, 0.2);
+      border-color: rgba(255, 51, 102, 0.8);
+      box-shadow: 0 0 24px rgba(255, 51, 102, 0.35);
+      background: linear-gradient(135deg, rgba(14, 20, 36, 0.7), rgba(60, 0, 20, 0.35));
     }}
     .attacker-card-top {{
       display: flex;
@@ -846,16 +862,19 @@ async def dashboard_page(request: Request):
         <div class="radar-title">
           <span>🎯 Real-Time Hacker & Remote Attacker Intelligence Radar</span>
         </div>
-        <div>
+        <div style="display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap;">
           <span style="font-size: 0.8rem; color: var(--text-muted); font-family: var(--font-mono);">
-            Actively tracking incoming IP telemetry from Kali Linux VM:
+            Actively tracking real-time IP telemetry & attacks
           </span>
+          <button onclick="clearAllBlocks()" class="unblock-btn" style="border-color: var(--cyan-accent); color: var(--cyan-accent); font-weight: 700;">
+            🧹 Clear Radar & Telemetry
+          </button>
         </div>
       </div>
 
       <div class="attacker-cards-grid" id="attacker-cards-box">
         <div style="color: var(--text-muted); padding: 1rem 0; font-family: var(--font-mono); font-size: 0.85rem;">
-          Awaiting inbound network connections from Kali Linux VM (192.168.64.x)...
+          Awaiting inbound network traffic / attack telemetry...
         </div>
       </div>
     </div>
@@ -1180,50 +1199,61 @@ async def dashboard_page(request: Request):
         const profiles = data.attacker_profiles || [];
         if (profiles.length === 0) {{
           attackerBox.innerHTML = `
-            <div style="color: var(--text-muted); padding: 1rem 0; font-family: var(--font-mono); font-size: 0.85rem;">
-              Awaiting inbound network connections from Kali Linux VM (192.168.64.x)...
+            <div style="color: var(--text-muted); padding: 1.25rem 0; font-family: var(--font-mono); font-size: 0.85rem; text-align: center;">
+              Awaiting inbound network traffic / attack telemetry from Localhost or Remote Kali VM...
             </div>
           `;
         }} else {{
-          attackerBox.innerHTML = profiles.map(p => `
-            <div class="attacker-card ${{p.status === 'BLOCKED' ? 'is-blocked' : ''}}">
+          attackerBox.innerHTML = profiles.map(p => {{
+            const cardClass = p.status === 'BLOCKED' ? 'is-blocked' : (p.status === 'SUSPICIOUS' || p.status === 'THROTTLED' ? 'is-suspicious' : 'is-clean');
+            const statusColor = p.status === 'BLOCKED' ? 'var(--red-alert)' : (p.status === 'SUSPICIOUS' || p.status === 'THROTTLED' ? 'var(--yellow-warn)' : 'var(--green-safe)');
+            const statusIcon = p.status === 'BLOCKED' ? '🔴' : (p.status === 'SUSPICIOUS' || p.status === 'THROTTLED' ? '🟡' : '🟢');
+            const catClean = p.category ? p.category.toLowerCase().replace(/[^a-z0-9]/g, '_') : 'benign';
+            return `
+            <div class="attacker-card ${{cardClass}}">
               <div class="attacker-card-top">
                 <div>
-                  <div class="ip-display">${{p.ip}}</div>
-                  <div style="font-size: 0.75rem; color: ${{p.is_external ? 'var(--cyan-accent)' : 'var(--text-muted)'}}; font-family: var(--font-mono);">
-                    ${{p.is_external ? '🌐 REMOTE HOST / KALI VM' : '💻 LOCALHOST LOOPBACK'}}
+                  <div class="ip-display" style="display: flex; align-items: center; gap: 0.45rem;">
+                    <span>${{statusIcon}}</span>
+                    <span>${{p.ip}}</span>
+                  </div>
+                  <div style="font-size: 0.75rem; color: ${{p.is_external ? 'var(--cyan-accent)' : 'var(--text-muted)'}}; font-family: var(--font-mono); margin-top: 0.2rem;">
+                    ${{p.is_external ? '🌐 REMOTE HOST / KALI VM' : '💻 LOCALHOST LOOPBACK (127.0.0.1)'}}
                   </div>
                 </div>
-                <span class="badge badge-${{p.status.toLowerCase().replace(/[^a-z]/g, '_')}}" style="font-size: 0.8rem;">${{p.status}}</span>
+                <span class="badge" style="background: rgba(255,255,255,0.06); border: 1px solid ${{statusColor}}; color: ${{statusColor}}; font-size: 0.8rem; font-weight: 700;">
+                  ${{p.status}}
+                </span>
               </div>
 
               <div class="stats-row">
                 <div>Requests: <strong>${{p.total_requests}}</strong></div>
-                <div>Auth Fails: <strong style="color: var(--red-alert);">${{p.auth_failures}}</strong></div>
+                <div>Auth Fails: <strong style="color: ${{p.auth_failures > 0 ? 'var(--red-alert)' : 'var(--text-muted)'}};">${{p.auth_failures}}</strong></div>
                 <div>Risk: <strong style="color: ${{p.risk_score > 0.6 ? 'var(--red-alert)' : (p.risk_score > 0.3 ? 'var(--yellow-warn)' : 'var(--green-safe)')}};">${{p.risk_score.toFixed(2)}}</strong></div>
               </div>
 
-              <div style="font-size: 0.8rem; color: var(--text-muted);">
-                Classification: <span class="badge badge-${{p.category.toLowerCase()}}">${{p.category}}</span>
-                ${{p.ttl > 0 ? `<span style="color: var(--yellow-warn); font-family: var(--font-mono); margin-left: 0.5rem;">[${{p.ttl}}s block remaining]</span>` : ''}}
+              <div style="font-size: 0.8rem; color: var(--text-muted); display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem;">
+                <span>Behavior:</span> <span class="badge badge-${{catClean}}">${{p.category}}</span>
+                ${{p.ttl > 0 ? `<span style="color: var(--yellow-warn); font-family: var(--font-mono); font-weight: 700;">[${{p.ttl}}s remaining]</span>` : ''}}
               </div>
 
               <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; gap: 0.5rem;">
                 <span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">Last seen: ${{p.last_seen_sec_ago}}s ago</span>
                 <div style="display: flex; gap: 0.4rem;">
                   ${{p.status === 'BLOCKED' ? `
-                    <button onclick="unblockSingleIp('${{p.ip}}')" class="unblock-btn" style="border-color: var(--green-safe); color: var(--green-safe);">
+                    <button onclick="unblockSingleIp('${{p.ip}}')" class="unblock-btn" style="border-color: var(--green-safe); color: var(--green-safe); font-weight: 700;">
                       🔓 Unblock IP
                     </button>
                   ` : `
-                    <button onclick="banSingleIp('${{p.ip}}')" class="unblock-btn" style="background: rgba(255, 51, 102, 0.15); border-color: var(--red-alert); color: var(--red-alert);">
+                    <button onclick="banSingleIp('${{p.ip}}')" class="unblock-btn" style="background: rgba(255, 51, 102, 0.15); border-color: var(--red-alert); color: var(--red-alert); font-weight: 700;">
                       🚫 Ban IP
                     </button>
                   `}}
                 </div>
               </div>
             </div>
-          `).join('');
+          `;
+          }}).join('');
         }}
 
         // Active Blocks List
