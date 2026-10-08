@@ -1,22 +1,80 @@
-from typing import Any
+"""
+Gateway Reverse Proxy & Upstream Dispatcher
 
-from fastapi import APIRouter, Request
+Receives requests routed through the API Gateway, applies behavioral
+threat analysis in coordination with the middleware, and dynamically forwards
+clean requests to the protected upstream target application (e.g. VulnStore).
+"""
+
+import json
+from typing import Any, Dict
+import httpx
+from fastapi import APIRouter, Request, Response, status
+from fastapi.responses import JSONResponse
 
 router = APIRouter(prefix="/gateway", tags=["gateway"])
+UPSTREAM_BASE_URL = "http://127.0.0.1:8001"
 
 
-@router.get("/proxy")
-async def proxy(request: Request) -> dict[str, Any]:
+@router.api_route("/{upstream_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
+async def gateway_proxy(upstream_path: str, request: Request):
     """
-    Represents the upstream service endpoint.
-    In production this would forward to real backend services.
-    All abuse detection happens in middleware before reaching here.
+    Proxies requests to the upstream application while attaching threat analysis metadata.
     """
     client_id = getattr(request.state, "client_id", "anonymous")
-    request_id = getattr(request.state, "request_id", "unknown")
+    client_ip = getattr(request.state, "client_ip", request.client.host if request.client else "127.0.0.1")
+    request_id = getattr(request.state, "request_id", "req-unknown")
+    verdict = getattr(request.state, "threat_verdict", None)
 
-    return {
-        "message": "Request reached upstream service",
-        "client_id": client_id,
-        "request_id": request_id,
+    # Standard threat headers
+    headers_to_attach = {
+        "X-Gateway-Request-ID": request_id,
+        "X-Protected-By": "Pygenic-Arc-Gateway (Team Rudranix)",
     }
+    if verdict:
+        headers_to_attach["X-Threat-Score"] = str(round(verdict.risk_score, 3))
+        headers_to_attach["X-Threat-Category"] = verdict.behaviour_category.value
+        headers_to_attach["X-Threat-Action"] = verdict.action.value
+        headers_to_attach["X-Threat-Evidence"] = json.dumps(verdict.evidence)
+
+    # Prepare forwarding to upstream
+    target_url = f"{UPSTREAM_BASE_URL}/{upstream_path}"
+    if request.url.query:
+        target_url = f"{target_url}?{request.url.query}"
+
+    body = await request.body()
+    forward_headers = {k: v for k, v in request.headers.items() if k.lower() not in ("host", "content-length")}
+    forward_headers["X-Forwarded-For"] = client_ip
+    forward_headers["X-Client-ID"] = client_id
+
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            upstream_resp = await client.request(
+                method=request.method,
+                url=target_url,
+                headers=forward_headers,
+                content=body,
+            )
+            # Combine upstream headers with Gateway defense headers
+            resp_headers = dict(upstream_resp.headers)
+            resp_headers.update(headers_to_attach)
+
+            return Response(
+                content=upstream_resp.content,
+                status_code=upstream_resp.status_code,
+                headers=resp_headers,
+                media_type=upstream_resp.headers.get("content-type"),
+            )
+    except Exception as e:
+        # Fallback simulation if upstream service is offline
+        return JSONResponse(
+            status_code=status.HTTP_200_OK,
+            content={
+                "message": f"Gateway intercepted request for /{upstream_path}",
+                "upstream_mode": "simulated_upstream (target service offline)",
+                "client_id": client_id,
+                "client_ip": client_ip,
+                "threat_assessment": verdict.to_dict() if verdict else "Passed standard checks",
+            },
+            headers=headers_to_attach,
+        )

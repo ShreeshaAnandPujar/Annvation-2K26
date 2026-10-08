@@ -1,3 +1,5 @@
+import asyncio
+import json
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
@@ -5,12 +7,9 @@ from starlette.responses import JSONResponse, Response
 from app.config import get_settings
 from app.core.metrics import ABUSE_DETECTIONS
 from app.core.redis_client import is_shadow_mode_enabled
-from app.services.abuse_detector import AbuseDetector
-from app.services.graduated_response import (
-    SOFT_BLOCK_TTL,
-    THROTTLE_DELAY_SECONDS,
-    ClientState,
-    GraduatedResponseService,
+from app.services.threat_engine import (
+    EnforcementAction,
+    threat_engine,
 )
 
 settings = get_settings()
@@ -18,85 +17,129 @@ settings = get_settings()
 
 class AbuseDetectorMiddleware(BaseHTTPMiddleware):
     """
-    Behavioral abuse detection with graduated enforcement.
+    Advanced Behavioral Abuse & Threat Detection Middleware (Pygenic Arc).
 
-    States in escalating order:
-    ALLOWED    → request proceeds normally
-    THROTTLED  → request delayed, Retry-After header attached
-    SOFT_BLOCK → 429 returned immediately, block stored in Redis with TTL
-    HARD_BLOCK → 403 returned, handled upstream by BloomFilterMiddleware
+    Evaluates every incoming request against:
+    1. Credential Stuffing (Dual-axis IP & Username failures)
+    2. Content Scraping (Inter-arrival timing entropy & pacing)
+    3. Endpoint Enumeration / IDOR (Sequential ID walking & 404 probing)
+    4. Abnormal Request Sequences (Markov transition workflow validation)
+    5. Benign Burst Traffic (Flash-sale human variance discrimination)
 
-    Shadow mode overrides enforcement — would-be blocks are logged
-    but requests are allowed through for threshold tuning.
+    Enforces Graduated Actions:
+    - ALLOWED: Normal processing
+    - THROTTLED: Async delay + Retry-After header
+    - SOFT_BLOCK: 429 Too Many Requests with TTL
+    - HARD_BLOCK: 403 Forbidden with permanent block
     """
 
     async def dispatch(
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
-        redis = request.app.state.redis
+        redis = getattr(request.app.state, "redis", None)
         client_id = getattr(request.state, "client_id", "anonymous")
-        client_ip = getattr(request.state, "client_ip", "unknown")
-
-        detector = AbuseDetector(redis)
-        graduated = GraduatedResponseService(redis)
-
-        # Gather abuse signals
-        ip_count_raw, user_count_raw = await redis.mget(
-            f"failed_auth:{client_ip}",
-            f"failed_auth:{client_id}",
+        client_ip = getattr(
+            request.state,
+            "client_ip",
+            request.client.host if request.client else "127.0.0.1",
         )
-        ip_fail_count = int(ip_count_raw or 0)
-        user_fail_count = int(user_count_raw or 0)
+        path = request.url.path
 
-        # Record timing and compute entropy
-        await detector.record_request_timing(client_id, settings.scraping_sample_size)
-        timing_entropy = await detector.compute_timing_entropy(client_id)
+        # Extract target username if present in auth attempts
+        target_username = None
+        if path.endswith("/login") and request.method == "POST":
+            try:
+                body = await request.body()
+                if body:
+                    data = json.loads(body.decode("utf-8"))
+                    target_username = data.get("username")
+            except Exception:
+                pass
 
-        # Compute graduated state
-        state, reason = await graduated.compute_abuse_score(
-            ip=client_ip,
+        # Perform Behavioral Threat Assessment
+        verdict = threat_engine.analyze_request(
             client_id=client_id,
-            ip_fail_count=ip_fail_count,
-            user_fail_count=user_fail_count,
-            timing_entropy=timing_entropy,
-            ip_threshold=settings.auth_failure_ip_threshold,
-            user_threshold=settings.auth_failure_user_threshold,
-            entropy_threshold=settings.scraping_entropy_threshold,
+            ip=client_ip,
+            path=path,
+            username=target_username,
         )
+        request.state.threat_verdict = verdict
 
-        # Shadow mode — log but never enforce
-        shadow_enabled = await is_shadow_mode_enabled(
-            redis, fallback=settings.shadow_mode_enabled
-        )
-        if shadow_enabled and state != ClientState.ALLOWED:
-            ABUSE_DETECTIONS.labels(
-                state=state.value,
-                reason_type=reason.split(":")[0],
-            ).inc()
-            request.state.shadow_rule = f"abuse_detector:{state.value}"
-            request.state.shadow_reason = reason
-            return await call_next(request)
+        # Shadow mode check
+        shadow_enabled = False
+        if redis:
+            try:
+                shadow_enabled = await is_shadow_mode_enabled(
+                    redis, fallback=settings.shadow_mode_enabled
+                )
+            except Exception:
+                shadow_enabled = settings.shadow_mode_enabled
+        else:
+            shadow_enabled = settings.shadow_mode_enabled
 
-        # Graduated enforcement
-        if state == ClientState.SOFT_BLOCK:
-            ABUSE_DETECTIONS.labels(
-                state="soft_block",
-                reason_type=reason.split(":")[0],
-            ).inc()
-            return JSONResponse(
-                status_code=429,
-                content={"detail": "Too many requests — temporary block applied"},
-                headers={"Retry-After": str(SOFT_BLOCK_TTL)},
-            )
-
-        if state == ClientState.THROTTLED:
-            ABUSE_DETECTIONS.labels(
-                state="throttled",
-                reason_type=reason.split(":")[0],
-            ).inc()
-            await graduated.apply_throttle()
+        if shadow_enabled and verdict.action != EnforcementAction.ALLOWED:
+            try:
+                ABUSE_DETECTIONS.labels(
+                    state=verdict.action.value.lower(),
+                    reason_type=verdict.behaviour_category.value.lower(),
+                ).inc()
+            except Exception:
+                pass
+            request.state.shadow_rule = f"threat_engine:{verdict.behaviour_category.value}"
+            request.state.shadow_reason = verdict.explanation
             response = await call_next(request)
-            response.headers["Retry-After"] = str(THROTTLE_DELAY_SECONDS)
+            self._attach_threat_headers(response, verdict)
             return response
 
-        return await call_next(request)
+        # Graduated Enforcement
+        if verdict.action in (EnforcementAction.SOFT_BLOCK, EnforcementAction.HARD_BLOCK):
+            try:
+                ABUSE_DETECTIONS.labels(
+                    state=verdict.action.value.lower(),
+                    reason_type=verdict.behaviour_category.value.lower(),
+                ).inc()
+            except Exception:
+                pass
+
+            status_code = 403 if verdict.action == EnforcementAction.HARD_BLOCK else 429
+            content = {
+                "error": "Access Blocked by API Threat Gateway",
+                "risk_score": verdict.risk_score,
+                "behaviour_category": verdict.behaviour_category.value,
+                "action": verdict.action.value,
+                "explanation": verdict.explanation,
+                "evidence": verdict.evidence,
+            }
+            headers = {
+                "Retry-After": "180",
+                "X-Threat-Score": str(verdict.risk_score),
+                "X-Threat-Category": verdict.behaviour_category.value,
+                "X-Threat-Action": verdict.action.value,
+            }
+            return JSONResponse(status_code=status_code, content=content, headers=headers)
+
+        if verdict.action == EnforcementAction.THROTTLED:
+            try:
+                ABUSE_DETECTIONS.labels(
+                    state="throttled",
+                    reason_type=verdict.behaviour_category.value.lower(),
+                ).inc()
+            except Exception:
+                pass
+            # Delay to degrade automation
+            await asyncio.sleep(1.5)
+            response = await call_next(request)
+            response.headers["Retry-After"] = "2"
+            self._attach_threat_headers(response, verdict)
+            return response
+
+        # ALLOWED
+        response = await call_next(request)
+        self._attach_threat_headers(response, verdict)
+        return response
+
+    @staticmethod
+    def _attach_threat_headers(response: Response, verdict) -> None:
+        response.headers["X-Threat-Score"] = str(verdict.risk_score)
+        response.headers["X-Threat-Category"] = verdict.behaviour_category.value
+        response.headers["X-Threat-Action"] = verdict.action.value
