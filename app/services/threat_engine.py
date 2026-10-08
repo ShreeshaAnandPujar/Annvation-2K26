@@ -76,6 +76,11 @@ class MarkovSequenceModel:
                 "/products": 0.3,
                 "/health": 0.1,
             },
+            "/health": {
+                "/health": 0.5,
+                "/products": 0.3,
+                "/auth/login": 0.2,
+            },
             "/auth/login": {
                 "/auth/login": 0.3,
                 "/products": 0.4,
