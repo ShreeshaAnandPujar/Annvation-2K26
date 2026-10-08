@@ -273,6 +273,21 @@ class InMemoryStateStore:
         self.blocked_ips[ip] = (time.time() + ttl_seconds, category)
         persist_blocked_ips_to_file(self.blocked_ips)
 
+    def unblock_ip(self, ip: str) -> bool:
+        if ip in self.blocked_ips:
+            del self.blocked_ips[ip]
+            persist_blocked_ips_to_file(self.blocked_ips)
+            return True
+        return False
+
+    def unblock(self, ip: str) -> bool:
+        return self.unblock_ip(ip)
+
+    def unblock_all(self):
+        self.blocked_ips.clear()
+        persist_blocked_ips_to_file(self.blocked_ips)
+
+
 
 class BehavioralThreatEngine:
     """
