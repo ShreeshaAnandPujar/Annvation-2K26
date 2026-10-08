@@ -83,24 +83,27 @@ async def setup_test_schema():
 async def reset_database(setup_test_schema):
     """
     Runs before EVERY individual test.
-    Fast truncation keeps tests isolated without the overhead of schema rebuilding.
+    Fast truncation/delete keeps tests isolated without the overhead of schema rebuilding.
     """
     async with test_engine.begin() as conn:
-        await conn.execute(text("TRUNCATE TABLE users RESTART IDENTITY CASCADE"))
+        if test_engine.dialect.name == "sqlite":
+            await conn.execute(text("DELETE FROM users"))
+        else:
+            await conn.execute(text("TRUNCATE TABLE users RESTART IDENTITY CASCADE"))
     yield
 
 
 @pytest_asyncio.fixture(autouse=True, scope="function")
 async def reset_redis():
-    """Flush the test Redis DB before and after each test.
-    Prevents rate limit counters and auth failure keys from
-    leaking between tests.
-    """
-    redis = Redis.from_url(TEST_REDIS_URL, decode_responses=True)
-    await redis.flushdb()
-    yield
-    await redis.flushdb()
-    await redis.aclose()
+    """Flush the test Redis DB before and after each test if available."""
+    try:
+        redis = Redis.from_url(TEST_REDIS_URL, decode_responses=True)
+        await redis.flushdb()
+        yield
+        await redis.flushdb()
+        await redis.aclose()
+    except Exception:
+        yield
 
 
 @pytest_asyncio.fixture(scope="function")

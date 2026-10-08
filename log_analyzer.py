@@ -136,23 +136,35 @@ def print_formatted_summary(results: List[Dict[str, Any]]):
 
 
 def main():
+    from pathlib import Path
+    base_dir = Path(__file__).resolve().parent
+    default_input = str(base_dir / "data" / "synthetic_api_logs.json")
+    default_output = str(base_dir / "output" / "threat_assessment_results.json")
+
     parser = argparse.ArgumentParser(description="Analyze API access logs for behavioral abuse.")
+    parser.add_argument(
+        "file_pos",
+        nargs="?",
+        default=None,
+        help="Positional path to access log file (JSON or CSV)",
+    )
     parser.add_argument(
         "--file",
         "-f",
-        default="/Users/shreeshaanandpujar/Desktop/api-gateway-with-abuse-detection/data/synthetic_api_logs.json",
+        default=None,
         help="Path to access log file (JSON or CSV)",
     )
     parser.add_argument(
         "--output",
         "-o",
-        default="/Users/shreeshaanandpujar/Desktop/api-gateway-with-abuse-detection/output/threat_assessment_results.json",
+        default=default_output,
         help="Path to save JSON evaluation report",
     )
     args = parser.parse_args()
+    target_file = args.file_pos or args.file or default_input
 
-    print(f"Loading and processing log dataset from: {args.file}...")
-    logs = load_logs(args.file)
+    print(f"Loading and processing log dataset from: {target_file}...")
+    logs = load_logs(target_file)
     results = analyze_log_stream(logs)
 
     # Save output JSON

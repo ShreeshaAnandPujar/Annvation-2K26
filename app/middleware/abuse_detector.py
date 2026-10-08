@@ -93,8 +93,10 @@ class AbuseDetectorMiddleware(BaseHTTPMiddleware):
                 )
             except Exception:
                 shadow_enabled = settings.shadow_mode_enabled
-        else:
-            shadow_enabled = settings.shadow_mode_enabled
+        # Actively banned IPs must NEVER be bypassed by shadow mode
+        is_actively_banned, _, _ = threat_engine.local_store.is_blocked(client_ip)
+        if is_actively_banned:
+            shadow_enabled = False
 
         if shadow_enabled and verdict.action != EnforcementAction.ALLOWED:
             try:

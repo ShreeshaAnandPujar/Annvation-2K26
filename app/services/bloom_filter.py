@@ -57,6 +57,17 @@ class BloomFilterService:
         await self.redis.sadd("known_bad_ips", ip)
         self.add_ip(ip)
 
+    async def remove_ip_from_redis(self, ip: str) -> None:
+        """Remove a bad IP from Redis and rebuild in-memory filter."""
+        await self.redis.srem("known_bad_ips", ip)
+        await self.sync_from_redis()
+
+    async def clear_all(self) -> None:
+        """Clear all entries in Redis and in memory."""
+        await self.redis.delete("known_bad_ips")
+        await self.redis.delete("abusive_agents")
+        await self.sync_from_redis()
+
     # ── Agent filter ──────────────────────────────────────────────────────────
 
     def add_agent(self, user_agent: str) -> None:

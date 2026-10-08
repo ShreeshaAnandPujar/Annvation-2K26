@@ -175,15 +175,20 @@ def generate_scenario_logs() -> List[Dict[str, Any]]:
 
 
 def main():
+    from pathlib import Path
+    base_dir = Path(__file__).resolve().parent
+    data_dir = base_dir / "data"
+    data_dir.mkdir(parents=True, exist_ok=True)
+
     dataset = generate_scenario_logs()
 
     # Save JSON
-    json_path = "/Users/shreeshaanandpujar/Desktop/api-gateway-with-abuse-detection/data/synthetic_api_logs.json"
+    json_path = data_dir / "synthetic_api_logs.json"
     with open(json_path, "w") as f:
         json.dump(dataset, f, indent=2)
 
     # Save CSV
-    csv_path = "/Users/shreeshaanandpujar/Desktop/api-gateway-with-abuse-detection/data/synthetic_api_logs.csv"
+    csv_path = data_dir / "synthetic_api_logs.csv"
     with open(csv_path, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(dataset[0].keys()))
         writer.writeheader()

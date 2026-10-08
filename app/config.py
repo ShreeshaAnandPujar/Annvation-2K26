@@ -33,8 +33,8 @@ class Settings(BaseSettings):
     scraping_entropy_threshold: float = 0.5
     scraping_sample_size: int = 20
 
-    # Shadow mode
-    shadow_mode_enabled: bool = True
+    # Shadow mode (False enables active enforcement and real blocking)
+    shadow_mode_enabled: bool = False
     shadow_mode_redis_key: str = "config:shadow_mode_enabled"
 
     model_config = SettingsConfigDict(

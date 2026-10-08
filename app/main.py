@@ -89,8 +89,18 @@ async def abuse_handler(
     )
 
 
+from fastapi.middleware.cors import CORSMiddleware
+
 # Middleware — added in reverse execution order
 # Last added executes first on the way in
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 app.add_middleware(ShadowModeMiddleware)
 app.add_middleware(AbuseDetectorMiddleware)
 app.add_middleware(RateLimitMiddleware)

@@ -35,6 +35,8 @@ class BehaviourCategory(StrEnum):
     SCRAPING = "SCRAPING"
     ENDPOINT_ENUMERATION = "ENDPOINT_ENUMERATION"
     ABNORMAL_SEQUENCE = "ABNORMAL_SEQUENCE"
+    AUTOMATED_BOT = "AUTOMATED_BOT"
+    MANUAL_BAN = "MANUAL_BAN"
 
 
 class EnforcementAction(StrEnum):
@@ -269,11 +271,16 @@ class BehavioralThreatEngine:
         is_blocked, blocked_cat, rem_ttl = self.local_store.is_blocked(ip)
         if is_blocked:
             ip_fails, user_fails = self.local_store.get_auth_failures(ip, username or client_id)
-            return ThreatVerdict(
+            enforce_action = (
+                EnforcementAction.HARD_BLOCK
+                if (blocked_cat in (BehaviourCategory.MANUAL_BAN, BehaviourCategory.AUTOMATED_BOT))
+                else EnforcementAction.SOFT_BLOCK
+            )
+            verdict_obj = ThreatVerdict(
                 risk_score=1.0,
                 behaviour_category=blocked_cat or BehaviourCategory.CREDENTIAL_STUFFING,
-                action=EnforcementAction.SOFT_BLOCK,
-                explanation=f"Client IP is under active enforcement block ({blocked_cat.value if blocked_cat else 'ABUSE'}). Retry window active.",
+                action=enforce_action,
+                explanation=f"Client IP {ip} is under active perimeter defense ban ({blocked_cat.value if blocked_cat else 'ABUSE'}). Packets rejected immediately.",
                 evidence={
                     "client_id": client_id,
                     "client_ip": ip,
@@ -281,9 +288,28 @@ class BehavioralThreatEngine:
                     "ttl_remaining_seconds": round(rem_ttl, 1),
                     "auth_failures_recorded": {"ip_fails": ip_fails, "user_fails": user_fails},
                     "feature_contributions": {"active_block": 1.0},
-                    "reasons": [f"Active enforcement block in place ({blocked_cat.value if blocked_cat else 'ABUSE'})"],
+                    "reasons": [f"Active perimeter ban enforced ({blocked_cat.value if blocked_cat else 'ABUSE'}) — {round(rem_ttl, 1)}s remaining"],
                 },
             )
+            self.total_requests += 1
+            self.total_blocked += 1
+            self.local_store.ip_request_counts[ip] += 1
+            self.local_store.ip_last_seen[ip] = time.time()
+            self.local_store.ip_latest_verdict[ip] = verdict_obj.to_dict()
+
+            event_record = {
+                "timestamp": round(time.time(), 3),
+                "time_str": time.strftime("%H:%M:%S"),
+                "client_ip": ip,
+                "client_id": client_id,
+                "path": path,
+                "verdict": verdict_obj.to_dict(),
+            }
+            self.recent_events.insert(0, event_record)
+            if len(self.recent_events) > 100:
+                self.recent_events.pop()
+
+            return verdict_obj
 
         # 2. Record request into sliding window
         self.local_store.record_request(client_id, ip, path, status_code, timestamp=timestamp)
@@ -548,6 +574,57 @@ class BehavioralThreatEngine:
             if ip_fails >= self.auth_fail_threshold_ip or user_fails >= self.auth_fail_threshold_user:
                 self.local_store.block_ip(ip, BehaviourCategory.CREDENTIAL_STUFFING, ttl_seconds=180)
                 self.total_blocked += 1
+
+    def manual_block_ip(
+        self,
+        ip: str,
+        category: BehaviourCategory = BehaviourCategory.MANUAL_BAN,
+        ttl_seconds: int = 300,
+        reason: str = "Manual operator intervention via SOC Dashboard",
+    ):
+        """Immediately enforces an active ban on an IP address across the gateway."""
+        self.local_store.block_ip(ip, category=category, ttl_seconds=ttl_seconds)
+        self.total_blocked += 1
+        self.local_store.ip_request_counts[ip] = self.local_store.ip_request_counts.get(ip, 0)
+        self.local_store.ip_last_seen[ip] = time.time()
+        self.local_store.ip_latest_verdict[ip] = {
+            "risk_score": 1.0,
+            "behaviour_category": category.value,
+            "action": EnforcementAction.HARD_BLOCK.value,
+            "explanation": f"Manual ban enforced by SOC operator ({reason})",
+            "evidence": {
+                "manual": True,
+                "reason": reason,
+                "ttl_seconds": ttl_seconds,
+                "reasons": [f"Manual ban enforced by SOC operator ({reason})"],
+                "feature_contributions": {"manual_ban": 1.0},
+            },
+        }
+        self.recent_events.insert(
+            0,
+            {
+                "timestamp": round(time.time(), 3),
+                "time_str": time.strftime("%H:%M:%S"),
+                "client_ip": ip,
+                "client_id": "soc_admin",
+                "path": "[MANUAL BAN ENFORCEMENT]",
+                "verdict": {
+                    "risk_score": 1.0,
+                    "behaviour_category": category.value,
+                    "action": EnforcementAction.HARD_BLOCK.value,
+                    "explanation": f"Manual ban enforced by SOC operator ({reason})",
+                    "evidence": {
+                        "manual": True,
+                        "reason": reason,
+                        "ttl_seconds": ttl_seconds,
+                        "reasons": [f"Manual ban enforced by SOC operator ({reason})"],
+                        "feature_contributions": {"manual_ban": 1.0},
+                    },
+                },
+            },
+        )
+        if len(self.recent_events) > 100:
+            self.recent_events.pop()
 
     def unblock_ip(self, ip: str) -> bool:
         cleared = False

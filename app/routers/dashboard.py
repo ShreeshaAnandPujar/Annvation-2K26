@@ -7,7 +7,7 @@ Kali Linux intrusion detection, and explainable perimeter defense analytics.
 """
 
 import time
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
@@ -21,24 +21,67 @@ class UnblockRequest(BaseModel):
     ip: str
 
 
+class BlockRequest(BaseModel):
+    ip: str
+    ttl_seconds: Optional[int] = 300
+    reason: Optional[str] = "Manual operator ban from SOC Dashboard"
+
+
 @router.get("/api/dashboard-stats")
 async def get_dashboard_stats():
     """Returns live telemetry for dashboard auto-refresh."""
     return threat_engine.get_dashboard_data()
 
 
+@router.post("/api/block-ip")
+async def block_ip(req: BlockRequest, request: Request):
+    """Allows administrators to manually ban an IP address across the gateway immediately."""
+    clean_ip = req.ip.strip()
+    threat_engine.manual_block_ip(
+        clean_ip,
+        ttl_seconds=req.ttl_seconds or 300,
+        reason=req.reason or "Manual operator ban from SOC Dashboard",
+    )
+    # Also sync to in-memory Bloom filter and Redis if available
+    bloom = getattr(request.app.state, "bloom", None)
+    if bloom:
+        bloom.add_ip(clean_ip)
+        redis = getattr(request.app.state, "redis", None)
+        if redis:
+            try:
+                await bloom.add_ip_to_redis(clean_ip)
+            except Exception:
+                pass
+    return {"success": True, "blocked_ip": clean_ip, "ttl_seconds": req.ttl_seconds or 300}
+
+
 @router.post("/api/unblock-ip")
-async def unblock_ip(req: UnblockRequest):
+async def unblock_ip(req: UnblockRequest, request: Request):
     """Allows administrators to unblock an IP during live demonstrations."""
-    res = threat_engine.unblock_ip(req.ip)
-    return {"success": res, "unblocked_ip": req.ip}
+    clean_ip = req.ip.strip()
+    res = threat_engine.unblock_ip(clean_ip)
+    bloom = getattr(request.app.state, "bloom", None)
+    redis = getattr(request.app.state, "redis", None)
+    if bloom and redis:
+        try:
+            await bloom.remove_ip_from_redis(clean_ip)
+        except Exception:
+            pass
+    return {"success": res, "unblocked_ip": clean_ip}
 
 
 @router.post("/api/clear-all-blocks")
-async def clear_all_blocks():
+async def clear_all_blocks(request: Request):
     """Clears all active blocks and resets historical tracking for clean test runs."""
     count = len(threat_engine.local_store.blocked_ips)
     threat_engine.clear_all()
+    bloom = getattr(request.app.state, "bloom", None)
+    redis = getattr(request.app.state, "redis", None)
+    if bloom and redis:
+        try:
+            await bloom.clear_all()
+        except Exception:
+            pass
     return {"success": True, "cleared_count": count}
 
 
@@ -504,6 +547,9 @@ async def dashboard_page(request: Request):
       </div>
     </div>
     <div class="header-links">
+      <button onclick="openManualBanModal('')" class="pill-link" style="border-color: var(--red-alert); color: var(--red-alert); background: rgba(255, 51, 102, 0.1); cursor: pointer;">
+        🚫 Ban IP Address
+      </button>
       <a href="http://{host_ip}:8001/" target="_blank" class="pill-link">
         🛒 Target Store (:8001)
       </a>
@@ -588,7 +634,7 @@ async def dashboard_page(request: Request):
                 <th>Risk Score</th>
                 <th>Detected Category</th>
                 <th>Gateway Action</th>
-                <th>Evidence Reason (Click Row to Inspect)</th>
+                <th>Evidence Reason (Click Row to Inspect / Ban)</th>
               </tr>
             </thead>
             <tbody id="stream-tbody">
@@ -610,6 +656,15 @@ async def dashboard_page(request: Request):
             <h3 style="font-size: 1rem; font-weight: 700;">Active IP Bans & Locks</h3>
             <span id="active-block-count" class="badge badge-soft_block">0</span>
           </div>
+
+          <!-- Quick Ban Input Form -->
+          <div style="display: flex; gap: 0.5rem; margin-bottom: 1rem;">
+            <input type="text" id="sidebar-quick-ip" placeholder="e.g. 192.168.64.2" style="flex: 1; background: var(--bg-surface); border: 1px solid var(--border-color); color: #fff; padding: 0.4rem 0.6rem; border-radius: 6px; font-family: var(--font-mono); font-size: 0.8rem; outline: none;">
+            <button onclick="quickBanFromSidebar()" class="unblock-btn" style="background: rgba(255, 51, 102, 0.2); border-color: var(--red-alert); color: var(--red-alert); font-weight: 700;">
+              🚫 Ban IP
+            </button>
+          </div>
+
           <div id="active-blocks-list" style="font-size: 0.85rem; font-family: var(--font-mono);">
             <div style="color: var(--text-muted); padding: 0.5rem 0;">No IPs currently banned.</div>
           </div>
@@ -705,8 +760,45 @@ async def dashboard_page(request: Request):
         <pre id="modal-event-evidence" style="background: #04060c; border: 1px solid var(--border-color); border-radius: 8px; padding: 1rem; font-family: var(--font-mono); font-size: 0.8rem; color: var(--cyan-accent); max-height: 180px; overflow-y: auto; white-space: pre-wrap;"></pre>
       </div>
 
-      <div style="display: flex; justify-content: flex-end;">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--border-color); padding-top: 1rem;">
+        <div style="display: flex; gap: 0.5rem;">
+          <button id="modal-btn-ban" class="unblock-btn" style="background: rgba(255, 51, 102, 0.2); border-color: var(--red-alert); color: var(--red-alert); font-weight: 700;" onclick="banCurrentModalIp()">
+            🚫 Ban This Source IP
+          </button>
+          <button id="modal-btn-unblock" class="unblock-btn" style="border-color: var(--green-safe); color: var(--green-safe);" onclick="unblockCurrentModalIp()">
+            🔓 Unblock IP
+          </button>
+        </div>
         <button class="pill-link" onclick="closeInspectorModal()">Close Inspector</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Manual Ban Operator Modal -->
+  <div class="modal-overlay" id="manual-ban-modal" onclick="closeManualBanModal()">
+    <div class="modal-container" style="width: 480px;" onclick="event.stopPropagation()">
+      <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid var(--border-color); padding-bottom: 1rem;">
+        <h3 style="font-size: 1.2rem; font-weight: 700; color: var(--red-alert);">🚫 Manual Gateway IP Ban</h3>
+        <button class="modal-close" onclick="closeManualBanModal()">&times;</button>
+      </div>
+      <div>
+        <label style="display: block; font-size: 0.8rem; color: var(--text-muted); font-family: var(--font-mono); margin-bottom: 0.4rem;">Target IP Address</label>
+        <input type="text" id="ban-input-ip" placeholder="e.g. 192.168.64.2" style="width: 100%; background: var(--bg-surface); border: 1px solid var(--border-color); color: #fff; padding: 0.6rem; border-radius: 6px; font-family: var(--font-mono); font-size: 0.9rem; outline: none; margin-bottom: 1rem;">
+
+        <label style="display: block; font-size: 0.8rem; color: var(--text-muted); font-family: var(--font-mono); margin-bottom: 0.4rem;">Ban Duration (TTL)</label>
+        <select id="ban-input-ttl" style="width: 100%; background: var(--bg-surface); border: 1px solid var(--border-color); color: #fff; padding: 0.6rem; border-radius: 6px; font-family: var(--font-mono); font-size: 0.9rem; outline: none; margin-bottom: 1rem;">
+          <option value="300">5 Minutes (300s)</option>
+          <option value="900">15 Minutes (900s)</option>
+          <option value="3600">1 Hour (3600s)</option>
+          <option value="86400">24 Hours (86400s)</option>
+        </select>
+
+        <label style="display: block; font-size: 0.8rem; color: var(--text-muted); font-family: var(--font-mono); margin-bottom: 0.4rem;">Reason / Memo</label>
+        <input type="text" id="ban-input-reason" value="Manual ban enforced by SOC operator" style="width: 100%; background: var(--bg-surface); border: 1px solid var(--border-color); color: #fff; padding: 0.6rem; border-radius: 6px; font-family: var(--font-mono); font-size: 0.9rem; outline: none; margin-bottom: 1.5rem;">
+
+        <button onclick="submitManualBan()" class="unblock-btn" style="width: 100%; padding: 0.75rem; background: var(--red-alert); color: #000; font-weight: 800; font-size: 0.95rem; border: none; cursor: pointer;">
+          🔒 Enforce Immediate Hard Ban
+        </button>
       </div>
     </div>
   </div>
@@ -714,6 +806,7 @@ async def dashboard_page(request: Request):
   <script>
     const HOST_IP = "{host_ip}";
     let currentEvents = [];
+    let selectedInspectorIp = "";
 
     // Auto-refresh loop
     document.addEventListener('DOMContentLoaded', () => {{
@@ -772,11 +865,19 @@ async def dashboard_page(request: Request):
                 ${{p.ttl > 0 ? `<span style="color: var(--yellow-warn); font-family: var(--font-mono); margin-left: 0.5rem;">[${{p.ttl}}s block remaining]</span>` : ''}}
               </div>
 
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.25rem;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.5rem; gap: 0.5rem;">
                 <span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">Last seen: ${{p.last_seen_sec_ago}}s ago</span>
-                <button onclick="unblockSingleIp('${{p.ip}}')" class="unblock-btn">
-                  ${{p.status === 'BLOCKED' ? '🔓 Unblock IP' : 'Reset History'}}
-                </button>
+                <div style="display: flex; gap: 0.4rem;">
+                  ${{p.status === 'BLOCKED' ? `
+                    <button onclick="unblockSingleIp('${{p.ip}}')" class="unblock-btn" style="border-color: var(--green-safe); color: var(--green-safe);">
+                      🔓 Unblock IP
+                    </button>
+                  ` : `
+                    <button onclick="banSingleIp('${{p.ip}}')" class="unblock-btn" style="background: rgba(255, 51, 102, 0.15); border-color: var(--red-alert); color: var(--red-alert);">
+                      🚫 Ban IP
+                    </button>
+                  `}}
+                </div>
               </div>
             </div>
           `).join('');
@@ -841,6 +942,7 @@ async def dashboard_page(request: Request):
       const ev = currentEvents[index];
       if (!ev) return;
       const v = ev.verdict;
+      selectedInspectorIp = ev.client_ip;
 
       document.getElementById('modal-event-path').innerText = ev.path;
       document.getElementById('modal-event-ip').innerText = ev.client_ip;
@@ -863,6 +965,60 @@ async def dashboard_page(request: Request):
 
     function closeInspectorModal() {{
       document.getElementById('inspector-modal').style.display = 'none';
+    }}
+
+    function openManualBanModal(prefillIp = '') {{
+      if (prefillIp) {{
+        document.getElementById('ban-input-ip').value = prefillIp;
+      }}
+      document.getElementById('manual-ban-modal').style.display = 'flex';
+    }}
+
+    function closeManualBanModal() {{
+      document.getElementById('manual-ban-modal').style.display = 'none';
+    }}
+
+    async function submitManualBan() {{
+      const ip = document.getElementById('ban-input-ip').value.trim();
+      const ttl = parseInt(document.getElementById('ban-input-ttl').value) || 300;
+      const reason = document.getElementById('ban-input-reason').value.trim();
+      if (!ip) {{
+        alert('Please enter a valid IP address.');
+        return;
+      }}
+      await banSingleIp(ip, ttl, reason);
+      closeManualBanModal();
+    }}
+
+    async function quickBanFromSidebar() {{
+      const ip = document.getElementById('sidebar-quick-ip').value.trim();
+      if (!ip) {{
+        alert('Enter an IP address to ban.');
+        return;
+      }}
+      await banSingleIp(ip, 300, 'Quick ban from SOC sidebar');
+      document.getElementById('sidebar-quick-ip').value = '';
+    }}
+
+    async function banCurrentModalIp() {{
+      if (!selectedInspectorIp) return;
+      await banSingleIp(selectedInspectorIp, 300, 'Direct ban from packet inspector');
+      closeInspectorModal();
+    }}
+
+    async function unblockCurrentModalIp() {{
+      if (!selectedInspectorIp) return;
+      await unblockSingleIp(selectedInspectorIp);
+      closeInspectorModal();
+    }}
+
+    async function banSingleIp(ip, ttl = 300, reason = 'Manual operator ban from SOC Dashboard') {{
+      await fetch('/api/block-ip', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ ip: ip, ttl_seconds: ttl, reason: reason }})
+      }});
+      fetchDashboardStats();
     }}
 
     async function unblockSingleIp(ip) {{
