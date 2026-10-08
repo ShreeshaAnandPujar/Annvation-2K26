@@ -32,6 +32,73 @@ app.add_middleware(
     expose_headers=["*"],
 )
 
+
+import json
+import os
+
+BLOCKED_IPS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "active_blocked_ips.json")
+
+
+def check_target_ip_banned(client_ip: str) -> tuple[bool, str, float]:
+    try:
+        if os.path.exists(BLOCKED_IPS_FILE):
+            with open(BLOCKED_IPS_FILE, "r") as f:
+                data = json.load(f)
+            item = data.get(client_ip)
+            if item:
+                rem = item.get("expiry", 0) - time.time()
+                if rem > 0:
+                    return True, item.get("category", "PERIMETER_BAN"), rem
+    except Exception:
+        pass
+    try:
+        from app.services.threat_engine import threat_engine
+        is_blocked, cat, rem_ttl = threat_engine.local_store.is_blocked(client_ip)
+        if is_blocked and rem_ttl > 0:
+            cat_str = cat.value if hasattr(cat, "value") else str(cat)
+            return True, cat_str, rem_ttl
+    except Exception:
+        pass
+    return False, "", 0.0
+
+
+@app.middleware("http")
+async def target_perimeter_ban_enforcement(request: Request, call_next):
+    """
+    Ensures that if an attacker IP is actively banned across Pygenic Arc,
+    they cannot bypass the gateway to access the target store directly.
+    """
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        client_ip = xff.split(",")[0].strip()
+    elif request.headers.get("X-Real-IP"):
+        client_ip = request.headers.get("X-Real-IP").strip()
+    elif request.client and request.client.host:
+        client_ip = request.client.host
+    else:
+        client_ip = "127.0.0.1"
+
+    is_blocked, cat_str, rem_ttl = check_target_ip_banned(client_ip)
+    if is_blocked and rem_ttl > 0:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error": "Access Blocked by Perimeter Defense",
+                "detail": f"Access Denied: IP address {client_ip} is banned until cooldown expires ({round(rem_ttl, 1)}s remaining).",
+                "blocked_ip": client_ip,
+                "category": cat_str or "PERIMETER_BAN",
+                "ttl_remaining_seconds": round(rem_ttl, 1),
+            },
+            headers={
+                "Retry-After": str(max(1, int(rem_ttl))),
+                "X-Threat-Score": "1.0",
+                "X-Threat-Category": cat_str or "PERIMETER_BAN",
+                "X-Threat-Action": "HARD_BLOCK",
+            },
+        )
+
+    return await call_next(request)
+
 # ── In-Memory Databases ───────────────────────────────────────────────────────
 
 USERS_DB: Dict[str, str] = {

@@ -12,14 +12,29 @@ import httpx
 from fastapi import APIRouter, Request, Response, status
 from fastapi.responses import JSONResponse
 
-router = APIRouter(prefix="/gateway", tags=["gateway"])
+router = APIRouter(tags=["gateway"])
 UPSTREAM_BASE_URL = "http://127.0.0.1:8001"
 
 
-@router.api_route("", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-@router.api_route("/", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-@router.api_route("/{upstream_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
-async def gateway_proxy(request: Request, upstream_path: str = ""):
+@router.api_route("/gateway", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/gateway/", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/gateway/{upstream_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/products", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/products/{p_id}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/users/{u_id}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/cart", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/cart/{c_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/checkout", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/orders", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/orders/{o_id}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def gateway_proxy(
+    request: Request,
+    upstream_path: str = "",
+    p_id: str = "",
+    u_id: str = "",
+    c_path: str = "",
+    o_id: str = "",
+):
     """
     Proxies requests to the upstream application while attaching threat analysis metadata.
     """
@@ -40,8 +55,12 @@ async def gateway_proxy(request: Request, upstream_path: str = ""):
         headers_to_attach["X-Threat-Evidence"] = json.dumps(verdict.evidence)
 
     # Prepare forwarding to upstream
-    clean_path = upstream_path.lstrip("/")
-    target_url = f"{UPSTREAM_BASE_URL}/{clean_path}"
+    req_path = request.url.path
+    if req_path.startswith("/gateway"):
+        clean_path = req_path[len("/gateway"):].lstrip("/")
+    else:
+        clean_path = req_path.lstrip("/")
+    target_url = f"{UPSTREAM_BASE_URL}/{clean_path}" if clean_path else UPSTREAM_BASE_URL
     if request.url.query:
         target_url = f"{target_url}?{request.url.query}"
 

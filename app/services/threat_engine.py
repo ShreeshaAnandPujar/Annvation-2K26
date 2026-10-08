@@ -171,6 +171,44 @@ class MarkovSequenceModel:
         return anomaly_score, violations
 
 
+import json
+import os
+
+DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data")
+BLOCKED_IPS_FILE = os.path.join(DATA_DIR, "active_blocked_ips.json")
+
+
+def persist_blocked_ips_to_file(blocked_dict: Dict[str, Tuple[float, Any]]):
+    try:
+        os.makedirs(DATA_DIR, exist_ok=True)
+        now = time.time()
+        serialized = {}
+        for ip, (expiry, cat) in blocked_dict.items():
+            if expiry > now:
+                cat_str = cat.value if hasattr(cat, "value") else str(cat)
+                serialized[ip] = {"expiry": expiry, "category": cat_str}
+        with open(BLOCKED_IPS_FILE, "w") as f:
+            json.dump(serialized, f)
+    except Exception:
+        pass
+
+
+def load_blocked_ips_from_file() -> Dict[str, Tuple[float, Any]]:
+    try:
+        if os.path.exists(BLOCKED_IPS_FILE):
+            with open(BLOCKED_IPS_FILE, "r") as f:
+                raw = json.load(f)
+            now = time.time()
+            return {
+                ip: (item["expiry"], item.get("category", "MANUAL_BAN"))
+                for ip, item in raw.items()
+                if item.get("expiry", 0) > now
+            }
+    except Exception:
+        pass
+    return {}
+
+
 class InMemoryStateStore:
     """Thread-safe in-memory cache mimicking Redis sliding windows and metrics."""
 
@@ -180,7 +218,7 @@ class InMemoryStateStore:
         self.status_codes: Dict[str, List[int]] = defaultdict(list)
         self.failed_auth_ip: Dict[str, int] = defaultdict(int)
         self.failed_auth_user: Dict[str, int] = defaultdict(int)
-        self.blocked_ips: Dict[str, Tuple[float, BehaviourCategory]] = {}
+        self.blocked_ips: Dict[str, Tuple[float, Any]] = load_blocked_ips_from_file()
         self.ip_request_counts: Dict[str, int] = defaultdict(int)
         self.ip_last_seen: Dict[str, float] = {}
         self.ip_latest_verdict: Dict[str, Dict[str, Any]] = {}
@@ -194,25 +232,27 @@ class InMemoryStateStore:
         timestamp: Optional[float] = None,
     ):
         ts = timestamp if timestamp is not None else time.time()
-        self.request_times[client_id].append(ts)
-        self.request_paths[client_id].append(path)
-        self.status_codes[client_id].append(status_code)
+        for key in {k for k in (ip, client_id) if k}:
+            self.request_times[key].append(ts)
+            self.request_paths[key].append(path)
+            self.status_codes[key].append(status_code)
+            if len(self.request_times[key]) > 50:
+                self.request_times[key].pop(0)
+                self.request_paths[key].pop(0)
+                self.status_codes[key].pop(0)
+
         self.ip_request_counts[ip] += 1
         self.ip_last_seen[ip] = ts
 
-        if len(self.request_times[client_id]) > 50:
-            self.request_times[client_id].pop(0)
-            self.request_paths[client_id].pop(0)
-            self.status_codes[client_id].pop(0)
-
     def record_auth_failure(self, ip: str, username: str):
         self.failed_auth_ip[ip] += 1
-        self.failed_auth_user[username] += 1
+        if username:
+            self.failed_auth_user[username] += 1
 
     def get_auth_failures(self, ip: str, username: str) -> Tuple[int, int]:
         return self.failed_auth_ip.get(ip, 0), self.failed_auth_user.get(username, 0)
 
-    def is_blocked(self, ip: str) -> Tuple[bool, Optional[BehaviourCategory], float]:
+    def is_blocked(self, ip: str) -> Tuple[bool, Optional[Any], float]:
         item = self.blocked_ips.get(ip)
         if item:
             expiry, cat = item
@@ -221,15 +261,17 @@ class InMemoryStateStore:
                 return True, cat, rem
             else:
                 del self.blocked_ips[ip]
+                persist_blocked_ips_to_file(self.blocked_ips)
         return False, None, 0.0
 
     def block_ip(
         self,
         ip: str,
-        category: BehaviourCategory,
+        category: Any,
         ttl_seconds: int = 180,
     ):
         self.blocked_ips[ip] = (time.time() + ttl_seconds, category)
+        persist_blocked_ips_to_file(self.blocked_ips)
 
 
 class BehavioralThreatEngine:
@@ -267,20 +309,15 @@ class BehavioralThreatEngine:
         Real-time or simulated inspection of a request.
         Returns a ThreatVerdict containing risk_score, behaviour_category, action, and evidence.
         """
-        # 1. Check existing active block first
+        # 1. Check existing active block first — complete perimeter denial
         is_blocked, blocked_cat, rem_ttl = self.local_store.is_blocked(ip)
-        if is_blocked:
+        if is_blocked and rem_ttl > 0:
             ip_fails, user_fails = self.local_store.get_auth_failures(ip, username or client_id)
-            enforce_action = (
-                EnforcementAction.HARD_BLOCK
-                if (blocked_cat in (BehaviourCategory.MANUAL_BAN, BehaviourCategory.AUTOMATED_BOT))
-                else EnforcementAction.SOFT_BLOCK
-            )
             verdict_obj = ThreatVerdict(
                 risk_score=1.0,
-                behaviour_category=blocked_cat or BehaviourCategory.CREDENTIAL_STUFFING,
-                action=enforce_action,
-                explanation=f"Client IP {ip} is under active perimeter defense ban ({blocked_cat.value if blocked_cat else 'ABUSE'}). Packets rejected immediately.",
+                behaviour_category=blocked_cat or BehaviourCategory.MANUAL_BAN,
+                action=EnforcementAction.HARD_BLOCK,
+                explanation=f"Client IP {ip} is actively banned across the perimeter ({blocked_cat.value if blocked_cat else 'BANNED'}). Access rejected ({round(rem_ttl, 1)}s remaining).",
                 evidence={
                     "client_id": client_id,
                     "client_ip": ip,
@@ -288,7 +325,7 @@ class BehavioralThreatEngine:
                     "ttl_remaining_seconds": round(rem_ttl, 1),
                     "auth_failures_recorded": {"ip_fails": ip_fails, "user_fails": user_fails},
                     "feature_contributions": {"active_block": 1.0},
-                    "reasons": [f"Active perimeter ban enforced ({blocked_cat.value if blocked_cat else 'ABUSE'}) — {round(rem_ttl, 1)}s remaining"],
+                    "reasons": [f"Active perimeter ban enforced ({blocked_cat.value if blocked_cat else 'BANNED'}) — {round(rem_ttl, 1)}s remaining"],
                 },
             )
             self.total_requests += 1
@@ -316,9 +353,10 @@ class BehavioralThreatEngine:
         if status_code in (401, 403) and "/auth" in path and username:
             self.local_store.record_auth_failure(ip, username)
 
-        recent_times = self.local_store.request_times[client_id]
-        recent_paths = self.local_store.request_paths[client_id]
-        recent_statuses = self.local_store.status_codes[client_id]
+        track_key = ip if ip and ip in self.local_store.request_times else client_id
+        recent_times = self.local_store.request_times[track_key]
+        recent_paths = self.local_store.request_paths[track_key]
+        recent_statuses = self.local_store.status_codes[track_key]
         ip_fails, user_fails = self.local_store.get_auth_failures(
             ip, username or client_id
         )
@@ -536,15 +574,18 @@ class BehavioralThreatEngine:
         now = time.time()
         for ip, (expiry, cat) in list(self.local_store.blocked_ips.items()):
             rem = max(0, int(expiry - now))
+            cat_name = cat.value if hasattr(cat, "value") else str(cat)
             if rem > 0:
-                active_blocks.append({"ip": ip, "category": cat.value, "ttl": rem})
+                active_blocks.append({"ip": ip, "category": cat_name, "ttl": rem})
             else:
                 del self.local_store.blocked_ips[ip]
 
         # Category counts
         cat_counts = defaultdict(int)
         for ev in self.recent_events:
-            cat_counts[ev["verdict"]["behaviour_category"]] += 1
+            v = ev.get("verdict", {})
+            cat_val = v.get("behaviour_category", "BENIGN")
+            cat_counts[cat_val] += 1
 
         # Attacker Profiles (Prioritizing external/remote IPs like Kali VM)
         attacker_profiles = []
@@ -561,13 +602,18 @@ class BehavioralThreatEngine:
             elif last_verdict.get("risk_score", 0) >= 0.40:
                 status_label = "SUSPICIOUS"
 
+            if is_blocked and blocked_cat:
+                cat_display = blocked_cat.value if hasattr(blocked_cat, "value") else str(blocked_cat)
+            else:
+                cat_display = last_verdict.get("behaviour_category", "BENIGN")
+
             attacker_profiles.append({
                 "ip": ip,
                 "is_external": ip not in ("127.0.0.1", "localhost"),
                 "total_requests": count,
                 "auth_failures": auth_fails,
                 "status": status_label,
-                "category": blocked_cat.value if is_blocked and blocked_cat else last_verdict.get("behaviour_category", "BENIGN"),
+                "category": cat_display,
                 "risk_score": 1.0 if is_blocked else round(last_verdict.get("risk_score", 0.0), 2),
                 "ttl": round(ttl, 1) if is_blocked else 0,
                 "last_seen_sec_ago": round(now - self.local_store.ip_last_seen.get(ip, now), 1),
@@ -659,6 +705,7 @@ class BehavioralThreatEngine:
         if ip in self.local_store.blocked_ips:
             del self.local_store.blocked_ips[ip]
             cleared = True
+        persist_blocked_ips_to_file(self.local_store.blocked_ips)
         if ip in self.local_store.failed_auth_ip:
             del self.local_store.failed_auth_ip[ip]
         if ip in self.local_store.request_paths:
@@ -671,6 +718,7 @@ class BehavioralThreatEngine:
 
     def clear_all(self):
         self.local_store.blocked_ips.clear()
+        persist_blocked_ips_to_file(self.local_store.blocked_ips)
         self.local_store.failed_auth_ip.clear()
         self.local_store.failed_auth_user.clear()
         self.local_store.request_paths.clear()

@@ -15,6 +15,20 @@ from app.services.threat_engine import (
 settings = get_settings()
 
 
+def extract_client_ip(request: Request) -> str:
+    xff = request.headers.get("X-Forwarded-For")
+    if xff:
+        ip = xff.split(",")[0].strip()
+        if ip:
+            return ip
+    x_real = request.headers.get("X-Real-IP")
+    if x_real:
+        return x_real.strip()
+    if request.client and request.client.host:
+        return request.client.host
+    return "127.0.0.1"
+
+
 class AbuseDetectorMiddleware(BaseHTTPMiddleware):
     """
     Advanced Behavioral Abuse & Threat Detection Middleware (Pygenic Arc).
@@ -37,12 +51,9 @@ class AbuseDetectorMiddleware(BaseHTTPMiddleware):
         self, request: Request, call_next: RequestResponseEndpoint
     ) -> Response:
         redis = getattr(request.app.state, "redis", None)
-        client_id = getattr(request.state, "client_id", "anonymous")
-        client_ip = getattr(
-            request.state,
-            "client_ip",
-            request.client.host if request.client else "127.0.0.1",
-        )
+        client_ip = extract_client_ip(request)
+        request.state.client_ip = client_ip
+        client_id = getattr(request.state, "client_id", None) or client_ip
         path = request.url.path
 
         # Ignore internal telemetry, dashboard, and administrative routes from threat evaluation

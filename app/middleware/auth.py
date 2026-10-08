@@ -32,40 +32,30 @@ class AuthMiddleware(BaseHTTPMiddleware):
             client_ip = client_ip.split(",")[0].strip()
         request.state.client_ip = client_ip
 
-        # Public paths or proxied gateway paths
-        if (
-            request.url.path in PUBLIC_PATHS
-            or request.url.path.startswith("/gateway")
-            or request.url.path.startswith("/api")
-            or request.url.path.startswith("/docs")
-            or request.url.path.startswith("/redoc")
-        ):
-            auth_header = request.headers.get("Authorization", "")
-            if auth_header.startswith("Bearer "):
-                token = auth_header.split(" ")[1]
-                payload = decode_access_token(token)
-                request.state.client_id = payload.get("sub", client_ip) if payload else client_ip
-            else:
-                request.state.client_id = request.headers.get("X-Client-ID", client_ip)
-            return await call_next(request)
-
-        # Standard protected internal endpoints (e.g. /admin)
         auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Not authenticated"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+        token = None
+        if auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+            payload = decode_access_token(token)
+            request.state.client_id = payload.get("sub", client_ip) if payload else client_ip
+        else:
+            request.state.client_id = request.headers.get("X-Client-ID", client_ip)
 
-        token = auth_header.split(" ")[1]
-        payload = decode_access_token(token)
-        if payload is None:
-            return JSONResponse(
-                status_code=401,
-                content={"detail": "Invalid or expired token"},
-                headers={"WWW-Authenticate": "Bearer"},
-            )
+        # Only internal /admin endpoints require strict valid JWT authentication
+        if request.url.path.startswith("/admin"):
+            if not token:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Not authenticated"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            payload = decode_access_token(token)
+            if payload is None:
+                return JSONResponse(
+                    status_code=401,
+                    content={"detail": "Invalid or expired token"},
+                    headers={"WWW-Authenticate": "Bearer"},
+                )
+            request.state.client_id = payload.get("sub", "unknown")
 
-        request.state.client_id = payload.get("sub", "unknown")
         return await call_next(request)
