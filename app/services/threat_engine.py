@@ -179,6 +179,9 @@ class InMemoryStateStore:
         self.failed_auth_ip: Dict[str, int] = defaultdict(int)
         self.failed_auth_user: Dict[str, int] = defaultdict(int)
         self.blocked_ips: Dict[str, Tuple[float, BehaviourCategory]] = {}
+        self.ip_request_counts: Dict[str, int] = defaultdict(int)
+        self.ip_last_seen: Dict[str, float] = {}
+        self.ip_latest_verdict: Dict[str, Dict[str, Any]] = {}
 
     def record_request(
         self,
@@ -192,6 +195,8 @@ class InMemoryStateStore:
         self.request_times[client_id].append(ts)
         self.request_paths[client_id].append(path)
         self.status_codes[client_id].append(status_code)
+        self.ip_request_counts[ip] += 1
+        self.ip_last_seen[ip] = ts
 
         if len(self.request_times[client_id]) > 50:
             self.request_times[client_id].pop(0)
@@ -456,6 +461,8 @@ class BehavioralThreatEngine:
         elif action == EnforcementAction.THROTTLED:
             self.total_throttled += 1
 
+        self.local_store.ip_latest_verdict[ip] = verdict_obj.to_dict()
+
         event_record = {
             "timestamp": round(time.time(), 3),
             "time_str": time.strftime("%H:%M:%S"),
@@ -485,13 +492,42 @@ class BehavioralThreatEngine:
         for ev in self.recent_events:
             cat_counts[ev["verdict"]["behaviour_category"]] += 1
 
+        # Attacker Profiles (Prioritizing external/remote IPs like Kali VM)
+        attacker_profiles = []
+        for ip, count in sorted(self.local_store.ip_request_counts.items(), key=lambda x: x[1], reverse=True):
+            is_blocked, blocked_cat, ttl = self.local_store.is_blocked(ip)
+            last_verdict = self.local_store.ip_latest_verdict.get(ip, {})
+            auth_fails = self.local_store.failed_auth_ip.get(ip, 0)
+
+            status_label = "CLEAN"
+            if is_blocked:
+                status_label = "BLOCKED"
+            elif last_verdict.get("action") == "THROTTLED":
+                status_label = "THROTTLED"
+            elif last_verdict.get("risk_score", 0) >= 0.40:
+                status_label = "SUSPICIOUS"
+
+            attacker_profiles.append({
+                "ip": ip,
+                "is_external": ip not in ("127.0.0.1", "localhost"),
+                "total_requests": count,
+                "auth_failures": auth_fails,
+                "status": status_label,
+                "category": blocked_cat.value if is_blocked and blocked_cat else last_verdict.get("behaviour_category", "BENIGN"),
+                "risk_score": 1.0 if is_blocked else round(last_verdict.get("risk_score", 0.0), 2),
+                "ttl": round(ttl, 1) if is_blocked else 0,
+                "last_seen_sec_ago": round(now - self.local_store.ip_last_seen.get(ip, now), 1),
+                "recent_paths": self.local_store.request_paths.get(ip, [])[-5:],
+            })
+
         return {
             "total_requests": self.total_requests,
             "total_blocked": self.total_blocked,
             "total_throttled": self.total_throttled,
             "active_blocks": active_blocks,
             "category_distribution": dict(cat_counts),
-            "recent_events": self.recent_events[:40],
+            "recent_events": self.recent_events[:50],
+            "attacker_profiles": attacker_profiles[:10],
         }
 
     def record_response_status(
