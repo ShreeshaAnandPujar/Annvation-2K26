@@ -270,6 +270,14 @@ class CheckoutRequest(BaseModel):
     recipient_name: Optional[str] = None
     username: Optional[str] = None
 
+# ── Health Check ──────────────────────────────────────────────────────────────
+
+@app.get("/health")
+@app.get("/api/health")
+async def health_check():
+    return {"status": "ok", "service": "vulnstore", "port": 8001}
+
+
 # ── REST API Endpoints ────────────────────────────────────────────────────────
 
 @app.post("/login")
