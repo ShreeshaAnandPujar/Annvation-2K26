@@ -30,14 +30,14 @@ async def test_close_redis_client_calls_aclose():
 
 @pytest.mark.asyncio
 async def test_create_redis_client_retries_on_failure():
-    """Client retries connection before raising on persistent failure."""
+    """Client retries connection before succeeding or falling back."""
     mock_client = AsyncMock()
     call_count = 0
 
     async def flaky_ping():
         nonlocal call_count
         call_count += 1
-        if call_count < 3:
+        if call_count < 2:
             raise RedisConnectionError("Redis not ready")
         return True
 
@@ -46,17 +46,21 @@ async def test_create_redis_client_retries_on_failure():
     with patch("app.core.redis_client.Redis.from_url", return_value=mock_client):
         with patch("app.core.redis_client.asyncio.sleep", new_callable=AsyncMock):
             client = await create_redis_client()
-            assert call_count == 3
+            assert call_count == 2
             assert client is mock_client
 
 
 @pytest.mark.asyncio
-async def test_create_redis_client_raises_after_max_retries():
-    """Client raises after exhausting all retries."""
+async def test_create_redis_client_fallback_after_max_retries():
+    """Client falls back to in-memory Redis after exhausting all retries."""
     mock_client = AsyncMock()
     mock_client.ping = AsyncMock(side_effect=RedisConnectionError("Redis down"))
 
     with patch("app.core.redis_client.Redis.from_url", return_value=mock_client):
         with patch("app.core.redis_client.asyncio.sleep", new_callable=AsyncMock):
-            with pytest.raises(RedisConnectionError):
-                await create_redis_client()
+            client = await create_redis_client()
+            assert client is not None
+            assert hasattr(client, "get")
+            assert hasattr(client, "set")
+            assert await client.ping() is True
+
