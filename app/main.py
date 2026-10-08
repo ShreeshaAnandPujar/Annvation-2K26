@@ -26,7 +26,7 @@ from app.middleware.bloom_filter import BloomFilterMiddleware
 from app.middleware.rate_limit import RateLimitMiddleware
 from app.middleware.request_id import RequestIDMiddleware
 from app.middleware.shadow_mode import ShadowModeMiddleware
-from app.routers import admin, auth, gateway
+from app.routers import admin, auth, dashboard, gateway
 from app.services.bloom_filter import BloomFilterService
 from app.workers.bloom_sync import bloom_sync_worker
 
@@ -101,6 +101,7 @@ app.add_middleware(RequestIDMiddleware)
 # Routers
 app.include_router(auth.router)
 app.include_router(gateway.router)
+app.include_router(dashboard.router)
 app.include_router(admin.router)
 
 

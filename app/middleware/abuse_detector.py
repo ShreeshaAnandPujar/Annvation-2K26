@@ -45,6 +45,25 @@ class AbuseDetectorMiddleware(BaseHTTPMiddleware):
         )
         path = request.url.path
 
+        # Ignore internal telemetry and dashboard routes from threat evaluation
+        if (
+            path in (
+                "/",
+                "/dashboard",
+                "/api/dashboard-stats",
+                "/api/unblock-ip",
+                "/api/clear-all-blocks",
+                "/health",
+                "/metrics",
+                "/docs",
+                "/openapi.json",
+                "/favicon.ico",
+            )
+            or path.startswith("/docs")
+            or path.startswith("/redoc")
+        ):
+            return await call_next(request)
+
         # Extract target username if present in auth attempts
         target_username = None
         if path.endswith("/login") and request.method == "POST":
@@ -88,6 +107,7 @@ class AbuseDetectorMiddleware(BaseHTTPMiddleware):
             request.state.shadow_rule = f"threat_engine:{verdict.behaviour_category.value}"
             request.state.shadow_reason = verdict.explanation
             response = await call_next(request)
+            threat_engine.record_response_status(client_id, client_ip, path, response.status_code, target_username)
             self._attach_threat_headers(response, verdict)
             return response
 
@@ -129,12 +149,14 @@ class AbuseDetectorMiddleware(BaseHTTPMiddleware):
             # Delay to degrade automation
             await asyncio.sleep(1.5)
             response = await call_next(request)
+            threat_engine.record_response_status(client_id, client_ip, path, response.status_code, target_username)
             response.headers["Retry-After"] = "2"
             self._attach_threat_headers(response, verdict)
             return response
 
         # ALLOWED
         response = await call_next(request)
+        threat_engine.record_response_status(client_id, client_ip, path, response.status_code, target_username)
         self._attach_threat_headers(response, verdict)
         return response
 

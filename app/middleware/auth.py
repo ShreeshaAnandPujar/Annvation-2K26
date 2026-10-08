@@ -6,12 +6,15 @@ from app.core.security import decode_access_token
 
 # Paths that don't require strict JWT tokens
 PUBLIC_PATHS = {
+    "/",
+    "/dashboard",
     "/health",
     "/metrics",
     "/auth/login",
     "/auth/register",
     "/docs",
     "/openapi.json",
+    "/favicon.ico",
 }
 
 
@@ -30,7 +33,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
         request.state.client_ip = client_ip
 
         # Public paths or proxied gateway paths
-        if request.url.path in PUBLIC_PATHS or request.url.path.startswith("/gateway"):
+        if (
+            request.url.path in PUBLIC_PATHS
+            or request.url.path.startswith("/gateway")
+            or request.url.path.startswith("/api")
+            or request.url.path.startswith("/docs")
+            or request.url.path.startswith("/redoc")
+        ):
             auth_header = request.headers.get("Authorization", "")
             if auth_header.startswith("Bearer "):
                 token = auth_header.split(" ")[1]

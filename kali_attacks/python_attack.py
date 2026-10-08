@@ -138,12 +138,13 @@ def run_benign(base_url: str):
 
 def main():
     parser = argparse.ArgumentParser(description="Kali Linux Attack Simulator for Pygenic Arc API Gateway")
+    parser.add_argument("--host", default="192.168.64.1", help="Host IP running Gateway/Target App (e.g. 192.168.64.1 or 10.0.11.104)")
     parser.add_argument("--target", choices=["direct", "gateway"], default="gateway",
                         help="'direct' hits vulnerable app (8001); 'gateway' hits protected gateway (8000/gateway)")
     parser.add_argument("--attack", choices=["stuffing", "scraping", "idor", "sequence", "benign", "all"], default="all")
     args = parser.parse_args()
 
-    base_url = DIRECT_URL if args.target == "direct" else GATEWAY_URL
+    base_url = f"http://{args.host}:8001" if args.target == "direct" else f"http://{args.host}:8000/gateway"
     print(f"==================================================")
     print(f"TARGET MODE: {args.target.upper()} ({base_url})")
     print(f"==================================================")

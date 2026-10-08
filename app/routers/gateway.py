@@ -16,8 +16,10 @@ router = APIRouter(prefix="/gateway", tags=["gateway"])
 UPSTREAM_BASE_URL = "http://127.0.0.1:8001"
 
 
-@router.api_route("/{upstream_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH"])
-async def gateway_proxy(upstream_path: str, request: Request):
+@router.api_route("", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+@router.api_route("/{upstream_path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"])
+async def gateway_proxy(request: Request, upstream_path: str = ""):
     """
     Proxies requests to the upstream application while attaching threat analysis metadata.
     """
@@ -38,7 +40,8 @@ async def gateway_proxy(upstream_path: str, request: Request):
         headers_to_attach["X-Threat-Evidence"] = json.dumps(verdict.evidence)
 
     # Prepare forwarding to upstream
-    target_url = f"{UPSTREAM_BASE_URL}/{upstream_path}"
+    clean_path = upstream_path.lstrip("/")
+    target_url = f"{UPSTREAM_BASE_URL}/{clean_path}"
     if request.url.query:
         target_url = f"{target_url}?{request.url.query}"
 
@@ -48,14 +51,13 @@ async def gateway_proxy(upstream_path: str, request: Request):
     forward_headers["X-Client-ID"] = client_id
 
     try:
-        async with httpx.AsyncClient(timeout=4.0) as client:
+        async with httpx.AsyncClient(timeout=6.0, follow_redirects=True) as client:
             upstream_resp = await client.request(
                 method=request.method,
                 url=target_url,
                 headers=forward_headers,
                 content=body,
             )
-            # Combine upstream headers with Gateway defense headers
             resp_headers = dict(upstream_resp.headers)
             resp_headers.update(headers_to_attach)
 
@@ -66,15 +68,16 @@ async def gateway_proxy(upstream_path: str, request: Request):
                 media_type=upstream_resp.headers.get("content-type"),
             )
     except Exception as e:
-        # Fallback simulation if upstream service is offline
         return JSONResponse(
-            status_code=status.HTTP_200_OK,
+            status_code=status.HTTP_502_BAD_GATEWAY,
             content={
-                "message": f"Gateway intercepted request for /{upstream_path}",
-                "upstream_mode": "simulated_upstream (target service offline)",
+                "error": "Upstream target application unreachable",
+                "target_url": target_url,
+                "detail": str(e),
                 "client_id": client_id,
                 "client_ip": client_ip,
-                "threat_assessment": verdict.to_dict() if verdict else "Passed standard checks",
+                "threat_assessment": verdict.to_dict() if verdict else None,
             },
             headers=headers_to_attach,
         )
+

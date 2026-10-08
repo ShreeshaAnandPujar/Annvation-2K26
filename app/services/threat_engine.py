@@ -231,6 +231,10 @@ class BehavioralThreatEngine:
         self.redis = redis_client
         self.local_store = InMemoryStateStore()
         self.sequence_model = MarkovSequenceModel()
+        self.recent_events: List[Dict[str, Any]] = []
+        self.total_requests = 0
+        self.total_blocked = 0
+        self.total_throttled = 0
 
         # Adaptive Thresholds
         self.min_samples_entropy = 4
@@ -435,13 +439,82 @@ class BehavioralThreatEngine:
             "reasons": reasons if reasons else ["Traffic matches legitimate baseline"],
         }
 
-        return ThreatVerdict(
+        verdict_obj = ThreatVerdict(
             risk_score=risk_score,
             behaviour_category=category,
             action=action,
             explanation=explanation,
             evidence=evidence,
         )
+        self.total_requests += 1
+        if action in (EnforcementAction.SOFT_BLOCK, EnforcementAction.HARD_BLOCK):
+            self.total_blocked += 1
+        elif action == EnforcementAction.THROTTLED:
+            self.total_throttled += 1
+
+        event_record = {
+            "timestamp": round(time.time(), 3),
+            "time_str": time.strftime("%H:%M:%S"),
+            "client_ip": ip,
+            "client_id": client_id,
+            "path": path,
+            "verdict": verdict_obj.to_dict(),
+        }
+        self.recent_events.insert(0, event_record)
+        if len(self.recent_events) > 100:
+            self.recent_events.pop()
+
+        return verdict_obj
+
+    def get_dashboard_data(self) -> Dict[str, Any]:
+        active_blocks = []
+        now = time.time()
+        for ip, (expiry, cat) in list(self.local_store.blocked_ips.items()):
+            rem = max(0, int(expiry - now))
+            if rem > 0:
+                active_blocks.append({"ip": ip, "category": cat.value, "ttl": rem})
+            else:
+                del self.local_store.blocked_ips[ip]
+
+        # Category counts
+        cat_counts = defaultdict(int)
+        for ev in self.recent_events:
+            cat_counts[ev["verdict"]["behaviour_category"]] += 1
+
+        return {
+            "total_requests": self.total_requests,
+            "total_blocked": self.total_blocked,
+            "total_throttled": self.total_throttled,
+            "active_blocks": active_blocks,
+            "category_distribution": dict(cat_counts),
+            "recent_events": self.recent_events[:40],
+        }
+
+    def record_response_status(
+        self,
+        client_id: str,
+        ip: str,
+        path: str,
+        status_code: int,
+        username: Optional[str] = None,
+    ):
+        """Records the status code after the request is processed by upstream."""
+        if client_id in self.local_store.status_codes and self.local_store.status_codes[client_id]:
+            self.local_store.status_codes[client_id][-1] = status_code
+
+        if status_code in (401, 403) and ("/auth" in path or "/login" in path):
+            self.local_store.record_auth_failure(ip, username or client_id)
+            ip_fails, user_fails = self.local_store.get_auth_failures(ip, username or client_id)
+            if ip_fails >= self.auth_fail_threshold_ip or user_fails >= self.auth_fail_threshold_user:
+                self.local_store.block_ip(ip, BehaviourCategory.CREDENTIAL_STUFFING, ttl_seconds=180)
+                self.total_blocked += 1
+
+    def unblock_ip(self, ip: str) -> bool:
+        if ip in self.local_store.blocked_ips:
+            del self.local_store.blocked_ips[ip]
+            return True
+        return False
 
 
 threat_engine = BehavioralThreatEngine()
+
