@@ -35,9 +35,9 @@ async def unblock_ip(req: UnblockRequest):
 
 @router.post("/api/clear-all-blocks")
 async def clear_all_blocks():
-    """Clears all current enforcement blocks."""
+    """Clears all current enforcement blocks and resets sliding histories."""
     count = len(threat_engine.local_store.blocked_ips)
-    threat_engine.local_store.blocked_ips.clear()
+    threat_engine.clear_all()
     return {"success": True, "cleared_count": count}
 
 

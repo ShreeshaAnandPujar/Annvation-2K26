@@ -130,6 +130,10 @@ class MarkovSequenceModel:
         clean = re.sub(r"^/gateway", "", clean)
         if not clean or clean == "/":
             return "/products"
+        if clean in ("/login", "/auth/login"):
+            return "/auth/login"
+        if clean in ("/register", "/auth/register"):
+            return "/auth/register"
         clean = re.sub(r"/\d+", "/{id}", clean)
         clean = re.sub(
             r"/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}",
@@ -510,10 +514,30 @@ class BehavioralThreatEngine:
                 self.total_blocked += 1
 
     def unblock_ip(self, ip: str) -> bool:
+        cleared = False
         if ip in self.local_store.blocked_ips:
             del self.local_store.blocked_ips[ip]
-            return True
-        return False
+            cleared = True
+        if ip in self.local_store.failed_auth_ip:
+            del self.local_store.failed_auth_ip[ip]
+        if ip in self.local_store.request_paths:
+            self.local_store.request_paths[ip].clear()
+        if ip in self.local_store.request_times:
+            self.local_store.request_times[ip].clear()
+        if ip in self.local_store.status_codes:
+            self.local_store.status_codes[ip].clear()
+        return cleared or True
+
+    def clear_all(self):
+        self.local_store.blocked_ips.clear()
+        self.local_store.failed_auth_ip.clear()
+        self.local_store.failed_auth_user.clear()
+        self.local_store.request_paths.clear()
+        self.local_store.request_times.clear()
+        self.local_store.status_codes.clear()
+        self.recent_events.clear()
+        self.total_blocked = 0
+        self.total_throttled = 0
 
 
 threat_engine = BehavioralThreatEngine()
