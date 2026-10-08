@@ -8,7 +8,6 @@
 > and graduated enforcement — built from scratch without dropping in an existing
 > library.
 
-**Live demo:** https://api-gateway-with-abuse-detection.onrender.com/docs
 
 ---
 
